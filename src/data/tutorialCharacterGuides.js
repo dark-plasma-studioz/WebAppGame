@@ -6,7 +6,7 @@ window.TUTORIAL_CHARACTER_GUIDE_BODY = {
   vanguard: [
     "ROLE - Frontline spearman who scales with skillful combos and teamplay. Rewards tight timing and good positioning.",
     "",
-    "SPEAR THRUST (attack) - Long melee thrust. On hit the boss is 'Pierced' (+5% vulnerability for 2.5s, stacks with other debuffs). Land another thrust within 1.2s and it becomes a Momentum thrust: 1.5x damage and longer reach. Chain your hits to keep the combo alive.",
+    "SPEAR THRUST (attack) - Long melee thrust. On hit the boss is 'Pierced' (+15% vulnerability for 2.5s, stacks with other debuffs). Land TWO thrust hits quickly; the THIRD thrust becomes a Momentum thrust (1.5x damage + longer reach). Momentum thrusts turn your spear red so they are obvious.",
     "HEAVENFALL LANCE (ability) - Two lances drop in parallel lanes with a short delay. Landing BOTH on the boss grants 'Skyfallen': your next Spear Thrusts deal +75% damage for 4s, and each thrust hit refreshes the timer. W combio with Momentum.",
     "DASH STRIKE (utility) - Surge forward with invulnerability, hitting the boss hard at impact. Passing ALLIES during the dash grants them 'Rally' (+25% damage for 3s) - smash your team before you hit the boss to buff their damage."
   ],

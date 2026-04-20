@@ -2395,8 +2395,34 @@ class BattleScene extends Phaser.Scene {
     sprite.movementLockUntil = 0;
     sprite.invulnerableUntil = 0;
     sprite.bossContactGraceUntil = 99999999;
+    sprite.vulnerabilityEffects = [];
+    sprite.applyVulnerability = (mult, durationMs, meta) => {
+      const now = this.time.now;
+      if (!sprite.vulnerabilityEffects) sprite.vulnerabilityEffects = [];
+      const safeMeta = meta && typeof meta === "object" ? meta : null;
+      const id = typeof safeMeta?.id === "string" ? safeMeta.id : "vuln";
+      const label = typeof safeMeta?.label === "string" ? safeMeta.label : "VULN";
+      const color = Number.isFinite(safeMeta?.color) ? safeMeta.color : 0xffffff;
+      sprite.vulnerabilityEffects.push({
+        mult: Phaser.Math.Clamp(mult, 1, 2),
+        expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0),
+        id,
+        label,
+        color
+      });
+    };
+    sprite.getVulnerabilityMultiplier = (nowOverride) => {
+      if (!sprite.vulnerabilityEffects?.length) return 1;
+      const now = Number.isFinite(nowOverride) ? nowOverride : this.time.now;
+      sprite.vulnerabilityEffects = sprite.vulnerabilityEffects.filter((e) => e.expiresAt > now);
+      if (!sprite.vulnerabilityEffects.length) return 1;
+      return sprite.vulnerabilityEffects.reduce((best, e) => Math.max(best, e.mult), 1);
+    };
     sprite.takeDamage = (amount) => {
-      const dmg = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+      const now = this.time.now;
+      let dmg = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+      const vuln = sprite.getVulnerabilityMultiplier(now);
+      if (vuln > 1) dmg = Math.max(1, Math.round(dmg * vuln));
       sprite.health = Math.max(0, sprite.health - dmg);
       if (sprite.health <= 0) {
         sprite.isAlive = false;
@@ -2548,6 +2574,10 @@ class BattleScene extends Phaser.Scene {
         return;
       }
       sprite.takeDamage(projectile.damage || 10);
+      if (projectile.spiritBoltHoming && typeof sprite.applyVulnerability === "function") {
+        sprite.applyVulnerability(projectile.spiritDebuffMult || 1.1, projectile.spiritDebuffMs || 3000, { id: "soulcallerSpirit", label: "SPIRIT", color: 0x58d8e8 });
+        this.spawnSpiritDebuffVfx(sprite, projectile.spiritCharged);
+      }
       this.spawnImpactEffect(sprite.x, sprite.y - 12, 0xffe2ff, 12);
       this.safeDeactivate(projectile);
     });
@@ -2798,8 +2828,34 @@ class BattleScene extends Phaser.Scene {
       };
 
       // One-hit phantom: any damage pops it.
+      sprite.vulnerabilityEffects = [];
+      sprite.applyVulnerability = (mult, durationMs, meta) => {
+        const now = this.time.now;
+        if (!sprite.vulnerabilityEffects) sprite.vulnerabilityEffects = [];
+        const safeMeta = meta && typeof meta === "object" ? meta : null;
+        const id = typeof safeMeta?.id === "string" ? safeMeta.id : "vuln";
+        const label = typeof safeMeta?.label === "string" ? safeMeta.label : "VULN";
+        const color = Number.isFinite(safeMeta?.color) ? safeMeta.color : 0xffffff;
+        sprite.vulnerabilityEffects.push({
+          mult: Phaser.Math.Clamp(mult, 1, 2),
+          expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0),
+          id,
+          label,
+          color
+        });
+      };
+      sprite.getVulnerabilityMultiplier = (nowOverride) => {
+        if (!sprite.vulnerabilityEffects?.length) return 1;
+        const now = Number.isFinite(nowOverride) ? nowOverride : this.time.now;
+        sprite.vulnerabilityEffects = sprite.vulnerabilityEffects.filter((e) => e.expiresAt > now);
+        if (!sprite.vulnerabilityEffects.length) return 1;
+        return sprite.vulnerabilityEffects.reduce((best, e) => Math.max(best, e.mult), 1);
+      };
       sprite.takeDamage = (amount) => {
-        const dmgTaken = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+        const now = this.time.now;
+        let dmgTaken = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+        const vuln = sprite.getVulnerabilityMultiplier(now);
+        if (vuln > 1) dmgTaken = Math.max(1, Math.round(dmgTaken * vuln));
         sprite.health = Math.max(0, sprite.health - dmgTaken);
         if (sprite.health <= 0) {
           sprite.isAlive = false;
@@ -2817,6 +2873,10 @@ class BattleScene extends Phaser.Scene {
           return;
         }
         sprite.isAlive = false;
+        if (projectile.spiritBoltHoming && typeof sprite.applyVulnerability === "function") {
+          sprite.applyVulnerability(projectile.spiritDebuffMult || 1.1, projectile.spiritDebuffMs || 3000, { id: "soulcallerSpirit", label: "SPIRIT", color: 0x58d8e8 });
+          this.spawnSpiritDebuffVfx(sprite, projectile.spiritCharged);
+        }
         this.safeDeactivate(projectile);
         this._destroyGraveWardenPhantom(entry, true);
       });
@@ -2922,8 +2982,34 @@ class BattleScene extends Phaser.Scene {
     sprite.movementLockUntil = 0;
     sprite.invulnerableUntil = 0;
     sprite.bossContactGraceUntil = 99999999;
+    sprite.vulnerabilityEffects = [];
+    sprite.applyVulnerability = (mult, durationMs, meta) => {
+      const now = this.time.now;
+      if (!sprite.vulnerabilityEffects) sprite.vulnerabilityEffects = [];
+      const safeMeta = meta && typeof meta === "object" ? meta : null;
+      const id = typeof safeMeta?.id === "string" ? safeMeta.id : "vuln";
+      const label = typeof safeMeta?.label === "string" ? safeMeta.label : "VULN";
+      const color = Number.isFinite(safeMeta?.color) ? safeMeta.color : 0xffffff;
+      sprite.vulnerabilityEffects.push({
+        mult: Phaser.Math.Clamp(mult, 1, 2),
+        expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0),
+        id,
+        label,
+        color
+      });
+    };
+    sprite.getVulnerabilityMultiplier = (nowOverride) => {
+      if (!sprite.vulnerabilityEffects?.length) return 1;
+      const now = Number.isFinite(nowOverride) ? nowOverride : this.time.now;
+      sprite.vulnerabilityEffects = sprite.vulnerabilityEffects.filter((e) => e.expiresAt > now);
+      if (!sprite.vulnerabilityEffects.length) return 1;
+      return sprite.vulnerabilityEffects.reduce((best, e) => Math.max(best, e.mult), 1);
+    };
     sprite.takeDamage = (amount) => {
-      const dmg = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+      const now = this.time.now;
+      let dmg = Number.isFinite(amount) ? Math.max(1, amount) : 1;
+      const vuln = sprite.getVulnerabilityMultiplier(now);
+      if (vuln > 1) dmg = Math.max(1, Math.round(dmg * vuln));
       sprite.health = Math.max(0, sprite.health - dmg);
       if (sprite.health <= 0) {
         sprite.isAlive = false;
@@ -7185,7 +7271,9 @@ class BattleScene extends Phaser.Scene {
     const f = player.facing > 0 ? 1 : -1;
     const baseX = player.x + f * (options.offsetX || 18);
     const y = player.y + (options.offsetY || -6);
-    const length = Math.max(24, options.length || 88);
+    const tipDist = Number.isFinite(options.tipDistance) ? Math.max(12, options.tipDistance) : null;
+    const tipXTarget = tipDist != null ? (player.x + f * tipDist) : null;
+    const length = tipXTarget != null ? Math.max(24, Math.abs(tipXTarget - baseX)) : Math.max(24, options.length || 88);
     const c = color || 0x5ca8ff;
     const thrust = { reach: 8, alpha: 1 };
     const spear = this.add.graphics();
@@ -7199,13 +7287,16 @@ class BattleScene extends Phaser.Scene {
       this.tweens.add({ targets: ghost, alpha: 0, duration: durationMs * 0.6, delay: i * 20, onComplete: () => ghost.destroy() });
     }
 
+    const reachTarget = tipXTarget != null ? length : length;
     this.tweens.add({
       targets: thrust,
-      reach: length,
+      reach: reachTarget,
       alpha: 0,
       duration: durationMs,
       onUpdate: () => {
-        const tipX = baseX + f * thrust.reach;
+        const tipX = tipXTarget != null
+          ? Phaser.Math.Linear(baseX + f * 8, tipXTarget, thrust.reach / length)
+          : (baseX + f * thrust.reach);
         const a = thrust.alpha;
         spear.clear();
 
@@ -7246,7 +7337,7 @@ class BattleScene extends Phaser.Scene {
     const sparkDelay = Math.max(20, durationMs * 0.4);
     this.time.delayedCall(sparkDelay, () => {
       if (this.gameState !== "battle") return;
-      const tipX = baseX + f * length;
+      const tipX = tipXTarget != null ? tipXTarget : (baseX + f * length);
       for (let i = 0; i < 5; i++) {
         const sp = this.add.circle(tipX, y, Phaser.Math.Between(1, 3), i % 2 === 0 ? 0xffffff : c, 0.8);
         sp.setDepth(DEPTH.PLAYER_FX + 1);

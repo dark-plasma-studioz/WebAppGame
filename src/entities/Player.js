@@ -33,6 +33,8 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     this.wraithPlatformPassUntil = 0;
     this.vanguardSpearState = definition.id === "vanguard" ? "idle" : null;
     this.vanguardSpearG = null;
+    this.vanguardThrustChainCount = 0;
+    this.vanguardThrustChainUntil = 0;
     this.strikerTwinBladesDoubleNext = false;
     this.strikerBlinkEvadeUntil = 0;
     this.strikerEvadeAmpGranted = false;
@@ -305,14 +307,16 @@ class Player extends Phaser.Physics.Arcade.Sprite {
         const momentumWindow = this.getAttackTuningValue(basicAttack, "momentumWindowMs", 1200);
         const momentumDmgMul = this.getAttackTuningValue(basicAttack, "momentumDamageMult", 1.5);
         const momentumRngMul = this.getAttackTuningValue(basicAttack, "momentumRangeMult", 1.25);
-        const momentumActive = Number.isFinite(this.vanguardMomentumUntil) && now < this.vanguardMomentumUntil;
+        const chainCount = now < (this.vanguardThrustChainUntil || 0) ? (this.vanguardThrustChainCount || 0) : 0;
+        // Momentum: land TWO thrust hits quickly; the THIRD thrust becomes the Momentum hit.
+        const momentumActive = chainCount >= 2;
         const dmgMul = momentumActive ? momentumDmgMul : 1;
         const rngMul = momentumActive ? momentumRngMul : 1;
         const atkRange = basicAttack.range * rngMul;
         const atkDamage = basicAttack.damage * dmgMul;
-        const visLen = Math.max(26, atkRange + 4);
-        this.scene.spawnSpearThrustVisual(this, momentumActive ? 0xcfe6ff : this.definition.color, {
-          length: visLen,
+        const spearCol = momentumActive ? 0xff3b3b : this.definition.color;
+        this.scene.spawnSpearThrustVisual(this, spearCol, {
+          tipDistance: atkRange,
           offsetX: Math.max(10, thrustSwing.offsetX - 24),
           offsetY: thrustSwing.offsetY,
           durationMs: this.getAttackTuningValue(basicAttack, "strikeVisualDurationMs", 95) + 10,
@@ -334,7 +338,10 @@ class Player extends Phaser.Physics.Arcade.Sprite {
           }
         );
         if (victim) {
-          this.vanguardMomentumUntil = now + momentumWindow;
+          // Advance/refresh thrust chain. Momentum hit consumes the chain and starts a new one.
+          const nextCount = momentumActive ? 1 : (chainCount + 1);
+          this.vanguardThrustChainCount = nextCount;
+          this.vanguardThrustChainUntil = now + momentumWindow;
           if (momentumActive && typeof this.scene.spawnVanguardMomentumFlare === "function") {
             this.scene.spawnVanguardMomentumFlare(this, victim);
           }
@@ -345,19 +352,6 @@ class Player extends Phaser.Physics.Arcade.Sprite {
             if (typeof this.scene.spawnVanguardPierceMark === "function") {
               this.scene.spawnVanguardPierceMark(boss);
             }
-          }
-          if (
-            Number.isFinite(this.vanguardSkyfallenUntil)
-            && now < this.vanguardSkyfallenUntil
-            && Number.isFinite(this.vanguardSkyfallenMult)
-            && Number.isFinite(this.vanguardSkyfallenDurationMs)
-          ) {
-            this.applyOutgoingDamageBuff(
-              this.vanguardSkyfallenMult,
-              this.vanguardSkyfallenDurationMs,
-              "vanguardSkyfallen"
-            );
-            this.vanguardSkyfallenUntil = now + this.vanguardSkyfallenDurationMs;
           }
         }
         break;

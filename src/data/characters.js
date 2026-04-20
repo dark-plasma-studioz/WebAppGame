@@ -50,7 +50,7 @@ const CHARACTERS = [
         strikeVisualDurationMs: 95,
         swing: { width: 92, height: 7, angle: 4, offsetX: 42, offsetY: -6, style: "thrust" },
         pierceMult: 1.05,
-        pierceDurationMs: 2500,
+        pierceDurationMs: 1500,
         momentumWindowMs: 1200,
         momentumDamageMult: 1.5,
         momentumRangeMult: 1.25
