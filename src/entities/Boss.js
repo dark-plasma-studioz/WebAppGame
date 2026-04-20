@@ -1923,10 +1923,13 @@ class Boss extends Phaser.Physics.Arcade.Sprite {
     const portalY = this.y + tuning.yOffset;
     this.scene.spawnPyromancerEmberPortal(portalX, portalY, direction, tuning.windupMs);
     this.setAttackCooldown("emberVolley", time, tuning.cooldownMs);
-    this.attackLockUntil = Math.max(this.attackLockUntil, time + tuning.windupMs + tuning.postLockMs);
-    this.lockMovement(time, tuning.windupMs);
-    for (let i = 0; i < tuning.shotCount; i += 1) {
-      this.scheduleBossAttackDelay(tuning.windupMs + i * tuning.shotIntervalMs, () => {
+    const shotCount = Math.max(1, Math.round(tuning.shotCount || 1));
+    const shotInterval = Math.max(10, Math.round(tuning.shotIntervalMs || 80));
+    const volleyDurationMs = tuning.windupMs + (shotCount - 1) * shotInterval;
+    this.attackLockUntil = Math.max(this.attackLockUntil, time + volleyDurationMs + tuning.postLockMs);
+    this.lockMovement(time, volleyDurationMs);
+    for (let i = 0; i < shotCount; i += 1) {
+      this.scheduleBossAttackDelay(tuning.windupMs + i * shotInterval, () => {
         if (!this.active || this.scene.gameState !== "battle") return;
         const offsetY = -16 + i * 10;
         const dy = Phaser.Math.Clamp(target.y - this.y + offsetY, -140, 140) * 0.2;
@@ -3218,18 +3221,34 @@ class Boss extends Phaser.Physics.Arcade.Sprite {
     }
   }
 
-  applyVulnerability(mult, durationMs) {
+  applyVulnerability(mult, durationMs, meta) {
     const now = this.scene?.time?.now ?? 0;
     if (!this.vulnerabilityEffects) this.vulnerabilityEffects = [];
+    const safeMeta = meta && typeof meta === "object" ? meta : null;
+    const id = typeof safeMeta?.id === "string" ? safeMeta.id : "vuln";
+    const label = typeof safeMeta?.label === "string" ? safeMeta.label : "VULN";
+    const color = Number.isFinite(safeMeta?.color) ? safeMeta.color : 0xffffff;
     this.vulnerabilityEffects.push({
       mult: Phaser.Math.Clamp(mult, 1, 2),
-      expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0)
+      expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0),
+      id,
+      label,
+      color
     });
   }
 
   getVulnerabilityMultiplier() {
-    if (!this.vulnerabilityEffects?.length) return 1;
     const now = this.scene?.time?.now ?? 0;
+    const own = this.getOwnVulnerabilityMultiplier(now);
+    if (!this.sharedHp) return own;
+    const sib = this.twinSibling?.active ? this.twinSibling.getOwnVulnerabilityMultiplier(now) : 1;
+    const lead = this.twinLeader?.active ? this.twinLeader.getOwnVulnerabilityMultiplier(now) : 1;
+    return Math.max(own, sib, lead);
+  }
+
+  getOwnVulnerabilityMultiplier(nowOverride) {
+    if (!this.vulnerabilityEffects?.length) return 1;
+    const now = Number.isFinite(nowOverride) ? nowOverride : (this.scene?.time?.now ?? 0);
     this.vulnerabilityEffects = this.vulnerabilityEffects.filter((e) => e.expiresAt > now);
     if (!this.vulnerabilityEffects.length) return 1;
     return this.vulnerabilityEffects.reduce((best, e) => Math.max(best, e.mult), 1);

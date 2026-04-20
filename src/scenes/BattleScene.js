@@ -285,7 +285,11 @@ class BattleScene extends Phaser.Scene {
           target.takeDamage(pd, projectile.effectColor || 0xfff7a8);
         }
         if (projectile.spiritBoltHoming && typeof target.applyVulnerability === "function") {
-          target.applyVulnerability(projectile.spiritDebuffMult || 1.1, projectile.spiritDebuffMs || 3000);
+          target.applyVulnerability(
+            projectile.spiritDebuffMult || 1.1,
+            projectile.spiritDebuffMs || 3000,
+            { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8 }
+          );
           this.spawnSpiritDebuffVfx(target, projectile.spiritCharged);
         }
         this.spawnImpactEffect(projectile.x, projectile.y, projectile.effectColor || 0xfff7a8, 14);
@@ -317,7 +321,11 @@ class BattleScene extends Phaser.Scene {
             target.takeDamage(pd, projectile.effectColor || 0xfff7a8);
           }
           if (projectile.spiritBoltHoming && typeof target.applyVulnerability === "function") {
-            target.applyVulnerability(projectile.spiritDebuffMult || 1.1, projectile.spiritDebuffMs || 3000);
+            target.applyVulnerability(
+              projectile.spiritDebuffMult || 1.1,
+              projectile.spiritDebuffMs || 3000,
+              { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8 }
+            );
             this.spawnSpiritDebuffVfx(target, projectile.spiritCharged);
           }
           if (projectile.medicResonance && projectile.ownerPlayer?.definition?.id === "medic") {
@@ -520,7 +528,8 @@ class BattleScene extends Phaser.Scene {
     this.updateSoulcallerDecoys(time);
     this.updateGraveWardenSummons(time);
     this.updateSoulLinkBondVfx(time);
-    this.drawBossVulnerabilityIndicator();
+    this.drawBossStatusBadges(time);
+    this.drawPlayerStatusBadges(time);
     this.renderTrueHitboxOverlay();
 
     if (!this.players.some((player) => player.isAlive)) {
@@ -540,6 +549,328 @@ class BattleScene extends Phaser.Scene {
 
     this.hud.update();
     this.updateBossStunIndicator(time);
+  }
+
+  drawBossStatusBadges(time) {
+    // Draw a small badge row above each active boss's head.
+    // Today we only have "vulnerability" effects, but this method is structured
+    // so additional boss statuses can be added later without changing UI plumbing.
+    const now = Number.isFinite(time) ? time : this.time.now;
+    const bosses = [];
+    if (this.boss?.active) bosses.push(this.boss);
+    if (this.bossTwin?.active && this.boss?.definition?.id === "hollowPair") bosses.push(this.bossTwin);
+
+    bosses.forEach((b) => this._drawStatusBadgesForBoss(b, now));
+  }
+
+  drawPlayerStatusBadges(time) {
+    const now = Number.isFinite(time) ? time : this.time.now;
+    (this.players || []).forEach((p) => this._drawStatusBadgesForPlayer(p, now));
+  }
+
+  _ensurePlayerStatusUi(player) {
+    if (!player || !player.active) return null;
+    if (player._statusBadgeRoot && player._statusBadgeRoot.active) return player._statusBadgeRoot;
+    const root = this.add.container(0, 0);
+    root.setDepth(DEPTH.PLAYER_FX + 5);
+    player._statusBadgeRoot = root;
+    player._statusBadgeG = this.add.graphics();
+    player._statusBadgeMeasureText = this.add.text(0, 0, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 3
+    });
+    player._statusBadgeMeasureText.setOrigin(0.5, 0.5);
+    player._statusBadgeMeasureText.setVisible(false);
+    root.add([player._statusBadgeG]);
+    return root;
+  }
+
+  _getPlayerStatusEntries(player, now) {
+    if (!player?.active || !player.isAlive) return [];
+    const entries = [];
+
+    // Outgoing damage buffs.
+    const dmg = (player.outgoingDamageBuffs || []).filter((e) => e && Number.isFinite(e.expiresAt) && e.expiresAt > now && Number.isFinite(e.mult) && e.mult > 1);
+    dmg.forEach((e) => {
+      const tag = e.tag || "dmg";
+      entries.push({ tag: `dmg:${tag}`, kind: "dmg", mult: e.mult, expiresAt: e.expiresAt });
+    });
+
+    // Damage reduction buffs (incoming multiplier < 1).
+    const dr = (player.damageReductionEffects || []).filter((e) => e && Number.isFinite(e.expiresAt) && e.expiresAt > now && Number.isFinite(e.multiplier) && e.multiplier > 0 && e.multiplier < 1);
+    dr.forEach((e) => {
+      const tag = e.tag || "dr";
+      entries.push({ tag: `dr:${tag}`, kind: "dr", mult: e.multiplier, expiresAt: e.expiresAt });
+    });
+
+    // Speed buffs.
+    const spd = (player.speedBuffs || []).filter((e) => e && Number.isFinite(e.expiresAt) && e.expiresAt > now && Number.isFinite(e.mult) && e.mult > 1);
+    spd.forEach((e) => {
+      const tag = e.tag || "spd";
+      entries.push({ tag: `spd:${tag}`, kind: "spd", mult: e.mult, expiresAt: e.expiresAt });
+    });
+
+    // Consolidate into one per tag (strongest / latest).
+    const best = new Map();
+    entries.forEach((e) => {
+      const cur = best.get(e.tag);
+      if (!cur || e.mult > cur.mult || (e.mult === cur.mult && e.expiresAt > cur.expiresAt)) best.set(e.tag, e);
+    });
+    return [...best.values()].sort((a, b) => (b.expiresAt - a.expiresAt));
+  }
+
+  _formatPlayerStatusBadge(entry, now) {
+    const secs = Math.max(0, (entry.expiresAt - now) / 1000);
+    const timeStr = secs >= 10 ? `${Math.ceil(secs)}s` : `${secs.toFixed(1)}s`;
+
+    // Labels/colors by tag.
+    const tag = entry.tag;
+    if (tag.includes("vanguardRally")) {
+      return { label: `RALLY +${Math.round((entry.mult - 1) * 100)}% DMG · ${timeStr}`, color: 0xffd966 };
+    }
+    if (tag.includes("vanguardSkyfallen")) {
+      return { label: `SKYFALLEN +${Math.round((entry.mult - 1) * 100)}% DMG · ${timeStr}`, color: 0x9bd2ff };
+    }
+    if (tag.includes("soulcallerPossession")) {
+      // For possession we may have both DMG and SPD entries; show kind-specific text.
+      const pct = Math.round((entry.mult - 1) * 100);
+      const kindLbl = entry.kind === "spd" ? "SPD" : entry.kind === "dmg" ? "DMG" : "BUFF";
+      return { label: `POSSESSION +${pct}% ${kindLbl} · ${timeStr}`, color: 0x58d8e8 };
+    }
+    if (tag.includes("guardianFortitude")) {
+      const red = Math.round((1 - entry.mult) * 100);
+      return { label: `FORTITUDE -${red}% DMG · ${timeStr}`, color: 0xff8b8b };
+    }
+    if (tag.includes("guardianTaunt")) {
+      const red = Math.round((1 - entry.mult) * 100);
+      return { label: `TAUNTED -${red}% DMG · ${timeStr}`, color: 0xff5a5a };
+    }
+    if (tag.includes("guardianAegisParry")) {
+      const red = Math.round((1 - entry.mult) * 100);
+      return { label: `AEGIS -${red}% DMG · ${timeStr}`, color: 0xffd3d3 };
+    }
+    if (entry.kind === "spd") {
+      return { label: `SPEED +${Math.round((entry.mult - 1) * 100)}% · ${timeStr}`, color: 0xffffff };
+    }
+    if (entry.kind === "dmg") {
+      return { label: `DMG +${Math.round((entry.mult - 1) * 100)}% · ${timeStr}`, color: 0xffffff };
+    }
+    if (entry.kind === "dr") {
+      return { label: `DR -${Math.round((1 - entry.mult) * 100)}% · ${timeStr}`, color: 0xffffff };
+    }
+    return { label: `BUFF · ${timeStr}`, color: 0xffffff };
+  }
+
+  _drawStatusBadgesForPlayer(player, now) {
+    const root = this._ensurePlayerStatusUi(player);
+    if (!root) return;
+    const g = player._statusBadgeG;
+    const measure = player._statusBadgeMeasureText;
+    if (!g || !measure) return;
+    g.clear();
+    if (!player.active || !player.isAlive) {
+      root.setVisible(false);
+      return;
+    }
+
+    const list = this._getPlayerStatusEntries(player, now).slice(0, 4);
+    if (!list.length) {
+      root.setVisible(false);
+      return;
+    }
+    root.setVisible(true);
+
+    const px = player.x;
+    const py = player.y - 58 + Math.sin(now * 0.008 + (player.label === "P2" ? 1.1 : 0)) * 1.2;
+    root.setPosition(px, py);
+
+    const padX = 10;
+    const padY = 6;
+    const badgeGap = 10;
+    const pulse = 0.78 + 0.22 * Math.sin(now * 0.012);
+    const bg = 0x000000;
+
+    const badges = list.map((e) => {
+      const f = this._formatPlayerStatusBadge(e, now);
+      measure.setText(f.label);
+      const w = Math.min(330, measure.width + padX * 2 + 18);
+      const h = Math.max(22, measure.height + padY * 2);
+      return { entry: e, ...f, w, h };
+    });
+
+    const totalW = badges.reduce((sum, b) => sum + b.w, 0) + Math.max(0, badges.length - 1) * badgeGap;
+    let x = -totalW / 2;
+    badges.forEach((b) => {
+      g.fillStyle(bg, 0.50);
+      g.lineStyle(2, b.color, 0.86);
+      g.fillRoundedRect(x, -b.h / 2, b.w, b.h, 8);
+      g.strokeRoundedRect(x, -b.h / 2, b.w, b.h, 8);
+      g.fillStyle(b.color, 0.95 * pulse);
+      g.fillCircle(x + 14, 0, 5);
+      g.lineStyle(2, b.color, 0.65 * pulse);
+      g.strokeCircle(x + 14, 0, 8);
+      x += b.w + badgeGap;
+    });
+
+    if (!player._statusBadgeTexts) player._statusBadgeTexts = [];
+    const arr = player._statusBadgeTexts;
+    while (arr.length < badges.length) {
+      const t = this.add.text(0, 0, "", {
+        fontFamily: "Arial",
+        fontSize: "13px",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 3
+      });
+      t.setOrigin(0.5, 0.5);
+      root.add(t);
+      arr.push(t);
+    }
+    for (let i = 0; i < arr.length; i += 1) arr[i].setVisible(i < badges.length);
+    x = -totalW / 2;
+    badges.forEach((b, idx) => {
+      const t = arr[idx];
+      t.setText(b.label);
+      t.setPosition(x + b.w / 2 + 6, 0);
+      x += b.w + badgeGap;
+    });
+  }
+
+  _ensureBossStatusUi(boss) {
+    if (!boss || !boss.active) return null;
+    if (boss._statusBadgeRoot && boss._statusBadgeRoot.active) return boss._statusBadgeRoot;
+    const root = this.add.container(0, 0);
+    root.setDepth(DEPTH.BOSS + 3);
+    boss._statusBadgeRoot = root;
+    boss._statusBadgeG = this.add.graphics();
+    // A hidden text instance used for quick measurements (we draw visible text via per-badge texts).
+    boss._statusBadgeMeasureText = this.add.text(0, 0, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 3
+    });
+    boss._statusBadgeMeasureText.setOrigin(0.5, 0.5);
+    boss._statusBadgeMeasureText.setVisible(false);
+    root.add([boss._statusBadgeG]);
+    return root;
+  }
+
+  _drawStatusBadgesForBoss(boss, now) {
+    const root = this._ensureBossStatusUi(boss);
+    if (!root) return;
+
+    const g = boss._statusBadgeG;
+    const text = boss._statusBadgeMeasureText;
+    if (!g || !text) return;
+
+    g.clear();
+    if (!boss.active) return;
+
+    // Active vulnerability entries (mult + expiresAt). Render multiple badges at once (one per id).
+    const listRaw = (boss.vulnerabilityEffects || []).filter((e) => (
+      e
+      && Number.isFinite(e.expiresAt)
+      && e.expiresAt > now
+      && Number.isFinite(e.mult)
+      && e.mult > 1
+    ));
+    if (!listRaw.length) {
+      root.setVisible(false);
+      return;
+    }
+    root.setVisible(true);
+
+    // Reduce to one entry per id (strongest mult, then latest expiry).
+    const byId = new Map();
+    listRaw.forEach((e) => {
+      const id = typeof e.id === "string" ? e.id : "vuln";
+      const cur = byId.get(id);
+      if (!cur) {
+        byId.set(id, e);
+        return;
+      }
+      if (e.mult > cur.mult || (e.mult === cur.mult && e.expiresAt > cur.expiresAt)) {
+        byId.set(id, e);
+      }
+    });
+    const list = [...byId.values()].sort((a, b) => (b.mult - a.mult) || (b.expiresAt - a.expiresAt));
+
+    // Position above head; bob slightly so it reads as "attached".
+    const bx = boss.x;
+    const by = boss.y - 66 + Math.sin(now * 0.006) * 1.5;
+    root.setPosition(bx, by);
+
+    // Measure each badge label with the shared text object, then draw all in one row.
+    const padX = 10;
+    const padY = 6;
+    const badgeGap = 10;
+    const badges = list.slice(0, 4).map((e) => {
+      const pct = Math.round((e.mult - 1) * 100);
+      const secs = Math.max(0, (e.expiresAt - now) / 1000);
+      const timeStr = secs >= 10 ? `${Math.ceil(secs)}s` : `${secs.toFixed(1)}s`;
+      const lbl = `${(e.label || "VULN")} +${pct}% · ${timeStr}`;
+      text.setText(lbl);
+      const w = text.width + padX * 2 + 18;
+      const h = Math.max(22, text.height + padY * 2);
+      return {
+        e,
+        lbl,
+        w: Math.min(330, w),
+        h
+      };
+    });
+    const totalW = badges.reduce((sum, b) => sum + b.w, 0) + Math.max(0, badges.length - 1) * badgeGap;
+    let x = -totalW / 2;
+    const pulse = 0.78 + 0.22 * Math.sin(now * 0.012);
+    const bg = 0x000000;
+    badges.forEach((b) => {
+      const intense = b.e.mult >= 1.2;
+      const baseCol = Number.isFinite(b.e.color) ? b.e.color : 0xffffff;
+      const frame = intense ? 0xff6666 : baseCol;
+      const icon = intense ? 0xff4444 : baseCol;
+      g.fillStyle(bg, 0.52);
+      g.lineStyle(2, frame, 0.86);
+      g.fillRoundedRect(x, -b.h / 2, b.w, b.h, 8);
+      g.strokeRoundedRect(x, -b.h / 2, b.w, b.h, 8);
+      g.fillStyle(icon, 0.95 * pulse);
+      g.fillCircle(x + 14, 0, 5);
+      g.lineStyle(2, icon, 0.65 * pulse);
+      g.strokeCircle(x + 14, 0, 8);
+      x += b.w + badgeGap;
+    });
+
+    // Draw the text for all badges (centered on each badge).
+    // We re-position the single text object and use it as a renderer by drawing multiple times via graphics text isn't possible,
+    // so we spawn lightweight per-badge texts and reuse them across frames.
+    if (!boss._statusBadgeTexts) boss._statusBadgeTexts = [];
+    const arr = boss._statusBadgeTexts;
+    while (arr.length < badges.length) {
+      const t = this.add.text(0, 0, "", {
+        fontFamily: "Arial",
+        fontSize: "13px",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 3
+      });
+      t.setOrigin(0.5, 0.5);
+      root.add(t);
+      arr.push(t);
+    }
+    for (let i = 0; i < arr.length; i += 1) {
+      arr[i].setVisible(i < badges.length);
+    }
+    x = -totalW / 2;
+    badges.forEach((b, idx) => {
+      const t = arr[idx];
+      t.setText(b.lbl);
+      t.setPosition(x + b.w / 2 + 6, 0);
+      x += b.w + badgeGap;
+    });
   }
 
   isTrueHitboxView() {
@@ -1317,6 +1648,13 @@ class BattleScene extends Phaser.Scene {
     return [
       ...this.players.filter((p) => p.isAlive && !p.soulShroudActive),
       ...this.soulcallerDecoys.filter((d) => d.sprite?.isAlive).map((d) => d.sprite),
+      ...this.soulcallerTurrets.filter((t) => t.sprite?.isAlive).map((t) => t.sprite)
+    ];
+  }
+
+  getFriendlyBuffTargets() {
+    return [
+      ...(this.players || []).filter((p) => p && p.isAlive),
       ...this.soulcallerTurrets.filter((t) => t.sprite?.isAlive).map((t) => t.sprite)
     ];
   }
@@ -5041,13 +5379,49 @@ class BattleScene extends Phaser.Scene {
     sprite.movementLockUntil = 0;
     sprite.invulnerableUntil = 0;
     sprite.bossContactGraceUntil = 0;
+    sprite.damageReductionEffects = [];
+    sprite.damageMultiplier = 1;
+    sprite.applyDamageReduction = (multiplier, durationMs) => {
+      const now = this.time.now;
+      if (!Number.isFinite(multiplier) || multiplier <= 0) return;
+      const safeMultiplier = Phaser.Math.Clamp(multiplier, 0.05, 1);
+      const safeDuration = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+      sprite.damageReductionEffects.push({ multiplier: safeMultiplier, expiresAt: now + safeDuration });
+      sprite.updateDamageReduction(now);
+    };
+    sprite.updateDamageReduction = (time) => {
+      if (!sprite.damageReductionEffects.length) {
+        sprite.damageMultiplier = 1;
+        return;
+      }
+      sprite.damageReductionEffects = sprite.damageReductionEffects.filter((effect) => (
+        effect
+        && Number.isFinite(effect.expiresAt)
+        && effect.expiresAt > time
+        && Number.isFinite(effect.multiplier)
+        && effect.multiplier > 0
+      ));
+      if (!sprite.damageReductionEffects.length) {
+        sprite.damageMultiplier = 1;
+        return;
+      }
+      sprite.damageMultiplier = sprite.damageReductionEffects.reduce(
+        (best, effect) => Math.min(best, Phaser.Math.Clamp(effect.multiplier, 0.05, 1)),
+        1
+      );
+    };
     sprite.takeDamage = (amount) => {
+      const now = this.time.now;
+      if (sprite.invulnerableUntil && now < sprite.invulnerableUntil) return 0;
       const dmg = Number.isFinite(amount) ? Math.max(1, amount) : 1;
-      sprite.health = Math.max(0, sprite.health - dmg);
+      sprite.updateDamageReduction(now);
+      const applied = Math.max(1, Math.ceil(dmg * (Number.isFinite(sprite.damageMultiplier) ? sprite.damageMultiplier : 1)));
+      sprite.health = Math.max(0, sprite.health - applied);
       if (sprite.health <= 0) {
         sprite.isAlive = false;
         this._destroyTurret(entry);
       }
+      return applied;
     };
 
     const container = this.add.container(tx, ty);
@@ -5317,8 +5691,8 @@ class BattleScene extends Phaser.Scene {
     if (durLeft <= 200) return;
     const dmgMult = t.allyDamageMult || 1.5;
     const spdMult = t.allySpeedMult || 1.5;
-    ally.applyOutgoingDamageBuff(dmgMult, durLeft);
-    ally.applySpeedBuff(spdMult, durLeft);
+    ally.applyOutgoingDamageBuff(dmgMult, durLeft, "soulcallerPossession");
+    ally.applySpeedBuff(spdMult, durLeft, "soulcallerPossession");
     if (typeof owner.onSoulLinkConnected === "function") {
       owner.onSoulLinkConnected(ally);
     }
@@ -11374,6 +11748,12 @@ class BattleScene extends Phaser.Scene {
       "CONTROLS",
       ctrls,
       "",
+      "YOUR STATUS",
+      ...(this.buildPlayerStatusPauseLines(player, this.time.now)),
+      "",
+      "BOSS STATUS",
+      ...(this.buildBossStatusPauseLines(this.boss, this.time.now)),
+      "",
       `BASIC — ${def.basicAttack.name}`,
       def.basicAttack.description || "",
       `Damage ${def.basicAttack.damage} · Cooldown ${def.basicAttack.cooldownMs} ms`,
@@ -11391,6 +11771,44 @@ class BattleScene extends Phaser.Scene {
       );
     }
     return lines.join("\n");
+  }
+
+  buildPlayerStatusPauseLines(player, now) {
+    if (!player?.active || !player.isAlive) return ["None"];
+    const t = Number.isFinite(now) ? now : this.time.now;
+    const list = this._getPlayerStatusEntries(player, t);
+    if (!list.length) return ["None"];
+    return list.slice(0, 8).map((e) => {
+      const f = this._formatPlayerStatusBadge(e, t);
+      return `- ${f.label}`;
+    });
+  }
+
+  buildBossStatusPauseLines(boss, now) {
+    if (!boss?.active) return ["(No boss)"];
+    const t = Number.isFinite(now) ? now : this.time.now;
+    const raw = (boss.vulnerabilityEffects || []).filter((e) => (
+      e
+      && Number.isFinite(e.expiresAt)
+      && e.expiresAt > t
+      && Number.isFinite(e.mult)
+      && e.mult > 1
+    ));
+    if (!raw.length) return ["None"];
+    const byId = new Map();
+    raw.forEach((e) => {
+      const id = typeof e.id === "string" ? e.id : "vuln";
+      const cur = byId.get(id);
+      if (!cur || e.mult > cur.mult || (e.mult === cur.mult && e.expiresAt > cur.expiresAt)) byId.set(id, e);
+    });
+    const list = [...byId.values()].sort((a, b) => (b.mult - a.mult) || (b.expiresAt - a.expiresAt));
+    return list.map((e) => {
+      const pct = Math.round((e.mult - 1) * 100);
+      const secs = Math.max(0, (e.expiresAt - t) / 1000);
+      const timeStr = secs >= 10 ? `${Math.ceil(secs)}s` : `${secs.toFixed(1)}s`;
+      const name = e.label || "VULN";
+      return `- ${name}: +${pct}% dmg taken (${timeStr})`;
+    });
   }
 
   refreshBattlePauseContent() {

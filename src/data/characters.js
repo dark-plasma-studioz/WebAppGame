@@ -40,7 +40,7 @@ const CHARACTERS = [
       type: "spearThrust",
       name: "Spear Thrust",
       description:
-        "Armor-lined lunge. On hit: 'Pierced' (+10% boss vulnerability, 2.5s). Landing thrusts within 1.2s chain into Momentum (1.5x dmg, longer reach).",
+        "Armor-lined lunge. On hit: 'Pierced' (+5% boss vulnerability, 2.5s). Landing thrusts within 1.2s chain into Momentum (1.5x dmg, longer reach).",
       damage: 14,
       range: 92,
       cooldownMs: 500,
@@ -49,7 +49,7 @@ const CHARACTERS = [
         hitboxYOffset: -6,
         strikeVisualDurationMs: 95,
         swing: { width: 92, height: 7, angle: 4, offsetX: 42, offsetY: -6, style: "thrust" },
-        pierceMult: 1.15,
+        pierceMult: 1.05,
         pierceDurationMs: 2500,
         momentumWindowMs: 1200,
         momentumDamageMult: 1.5,
@@ -222,7 +222,7 @@ const CHARACTERS = [
       name: "Shield Cleave",
       description:
         "Tower shield sweeps a wide arc. Landing hits grants Fortitude (10% damage reduction, refreshes for 1.5s).",
-      damage: 9,
+      damage: 8,
       range: 84,
       cooldownMs: 520,
       tuning: {
@@ -245,7 +245,7 @@ const CHARACTERS = [
         shieldMultiplier: 0.25,
         healAmount: 0,
         tauntDurationMs: 4000,
-        tauntDamageMultiplier: 0.70
+        tauntDamageMultiplier: 0.80
       }
     },
     utility: {
@@ -257,7 +257,7 @@ const CHARACTERS = [
       tuning: {
         windowMs: 300,
         meleeStunMs: 3000,
-        allyAegisMultiplier: 0.75,
+        allyAegisMultiplier: 0.5,
         allyAegisDurationMs: 4000
       }
     }

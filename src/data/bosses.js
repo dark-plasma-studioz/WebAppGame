@@ -164,7 +164,7 @@ const BOSSES = [
     attackTuning: {
       flameWarp: {
         windupMs: 740,
-        radius: 108,
+        radius: 120,
         damage: 18,
         offsetX: 24,
         dodgeWindowMs: 500,
@@ -177,7 +177,7 @@ const BOSSES = [
         projectileDamage: 8,
         cooldownMs: 1786
       },
-      fireNova: { windupMs: 580, radius: 160, damage: 20, cooldownMs: 1929 },
+      fireNova: { windupMs: 500, radius: 175, damage: 20, cooldownMs: 1929 },
       cinderRush: {
         windupMs: 500,
         width: 300,

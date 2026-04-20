@@ -354,15 +354,25 @@ class AbilitySystem {
     scene.time.delayedCall(channelMs, () => {
       if (!player.active || !player.isAlive || scene.gameState !== "battle") return;
       player.clearTint();
-      players.forEach((ally) => {
-        if (!ally.isAlive) return;
+      const alliesRaw = players && players.length ? players : scene.players || [];
+      const allies = typeof scene.getFriendlyBuffTargets === "function" ? scene.getFriendlyBuffTargets() : alliesRaw;
+      allies.forEach((ally) => {
+        if (!ally?.isAlive) return;
         ally.health = Math.min(ally.maxHealth, ally.health + ability.power);
-        ally.applyDamageReduction(tuning.reductionMultiplier, tuning.reductionDurationMs);
-        ally.flash(0x7dffb6);
-        scene.spawnImpactEffect(ally.x, ally.y - 16, 0x7dffb6, 12);
-        scene.spawnHealMarker(ally.x, ally.y - 24, 0x7dffb6);
-        scene.spawnBuffIcon(ally, "heal", 0x7dffb6, 900);
-        scene.spawnBuffIcon(ally, "shield", 0x8fffd3, 900);
+        if (typeof ally.applyDamageReduction === "function") {
+          ally.applyDamageReduction(tuning.reductionMultiplier, tuning.reductionDurationMs);
+        }
+        if (typeof ally.flash === "function") {
+          ally.flash(0x7dffb6);
+        }
+        if (Number.isFinite(ally.x) && Number.isFinite(ally.y)) {
+          scene.spawnImpactEffect(ally.x, ally.y - 16, 0x7dffb6, 12);
+          scene.spawnHealMarker(ally.x, ally.y - 24, 0x7dffb6);
+        }
+        if (typeof scene.spawnBuffIcon === "function") {
+          scene.spawnBuffIcon(ally, "heal", 0x7dffb6, 900);
+          scene.spawnBuffIcon(ally, "shield", 0x8fffd3, 900);
+        }
       });
     });
   }
@@ -485,15 +495,22 @@ class AbilitySystem {
       tauntDamageMultiplier: 0.70
     });
     const range = ability.range || 100;
-    const allies = players && players.length ? players : scene.players || [];
+    const alliesRaw = players && players.length ? players : scene.players || [];
+    const allies = typeof scene.getFriendlyBuffTargets === "function" ? scene.getFriendlyBuffTargets() : alliesRaw;
     const bubbleColor = 0xff8b8b;
 
     allies.forEach((ally) => {
-      if (!ally.isAlive) return;
-      ally.applyDamageReduction(tuning.shieldMultiplier, ability.durationMs);
+      if (!ally?.isAlive) return;
+      if (typeof ally.applyDamageReduction === "function") {
+        ally.applyDamageReduction(tuning.shieldMultiplier, ability.durationMs);
+      }
       ally.health = Math.min(ally.maxHealth, ally.health + tuning.healAmount);
-      ally.flash(0xff8b8b);
-      scene.spawnPersistentShieldDrIcon(ally, bubbleColor, ability.durationMs);
+      if (typeof ally.flash === "function") {
+        ally.flash(0xff8b8b);
+      }
+      if (typeof scene.spawnPersistentShieldDrIcon === "function") {
+        scene.spawnPersistentShieldDrIcon(ally, bubbleColor, ability.durationMs);
+      }
     });
 
     if (player.definition.id === "guardian") {

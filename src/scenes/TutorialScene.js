@@ -39,7 +39,7 @@ class TutorialScene extends Phaser.Scene {
       this.createPagedView({
         kind: "guides",
         pages,
-        bodyFontSize: "14px",
+        bodyFontSize: "12px",
         lastButtonLabel: "Done",
         onLastAdvance: () => {
           this.scene.start("TutorialScene", { mode: "hub" });

@@ -341,7 +341,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
           if (boss && victim === boss && typeof boss.applyVulnerability === "function") {
             const pMult = this.getAttackTuningValue(basicAttack, "pierceMult", 1.15);
             const pMs = this.getAttackTuningValue(basicAttack, "pierceDurationMs", 2500);
-            boss.applyVulnerability(pMult, pMs);
+            boss.applyVulnerability(pMult, pMs, { id: "vanguardPierced", label: "PIERCED", color: 0x89c4ff });
             if (typeof this.scene.spawnVanguardPierceMark === "function") {
               this.scene.spawnVanguardPierceMark(boss);
             }
@@ -755,10 +755,14 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     return this.speedBuffs.reduce((best, e) => Math.max(best, e.mult), 1);
   }
 
-  applySpeedBuff(mult, durationMs) {
+  applySpeedBuff(mult, durationMs, tag) {
     if (!Number.isFinite(mult) || mult <= 1) return;
     const now = this.scene?.time?.now ?? 0;
-    this.speedBuffs.push({ mult: Phaser.Math.Clamp(mult, 1, 2.5), expiresAt: now + durationMs });
+    const ms = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+    if (tag) {
+      this.speedBuffs = (this.speedBuffs || []).filter((e) => e && e.tag !== tag);
+    }
+    this.speedBuffs.push({ mult: Phaser.Math.Clamp(mult, 1, 2.5), expiresAt: now + ms, tag: tag || null });
   }
 }
 

@@ -6,14 +6,14 @@ window.TUTORIAL_CHARACTER_GUIDE_BODY = {
   vanguard: [
     "ROLE - Frontline spearman who scales with skillful combos and teamplay. Rewards tight timing and good positioning.",
     "",
-    "SPEAR THRUST (attack) - Long melee thrust. On hit the boss is 'Pierced' (+15% vulnerability for 2.5s, stacks with other debuffs). Land another thrust within 1.2s and it becomes a Momentum thrust: 1.5x damage and longer reach. Chain your hits to keep the combo alive.",
-    "HEAVENFALL LANCE (ability) - Two lances drop in parallel lanes with a short delay. Landing BOTH on the boss grants 'Skyfallen': your next Spear Thrusts deal +75% damage for 4s, and each thrust hit refreshes the timer. Pairs nastily with Momentum.",
-    "DASH STRIKE (utility) - Surge forward with invulnerability, hitting the boss hard at impact. Passing ALLIES during the dash grants them 'Rally' (+25% damage for 3s) - route through your team before you hit the boss to buff their damage window."
+    "SPEAR THRUST (attack) - Long melee thrust. On hit the boss is 'Pierced' (+5% vulnerability for 2.5s, stacks with other debuffs). Land another thrust within 1.2s and it becomes a Momentum thrust: 1.5x damage and longer reach. Chain your hits to keep the combo alive.",
+    "HEAVENFALL LANCE (ability) - Two lances drop in parallel lanes with a short delay. Landing BOTH on the boss grants 'Skyfallen': your next Spear Thrusts deal +75% damage for 4s, and each thrust hit refreshes the timer. W combio with Momentum.",
+    "DASH STRIKE (utility) - Surge forward with invulnerability, hitting the boss hard at impact. Passing ALLIES during the dash grants them 'Rally' (+25% damage for 3s) - smash your team before you hit the boss to buff their damage."
   ],
   medic: [
     "ROLE - Fragile support: every hit and every ward shapes the fight. High skill ceiling - the better you aim, the stronger your heals.",
     "",
-    "PULSE BOLT (attack) - Small damage + small ally-heal per hit. Hitting the BOSS builds Resonance (max 3 stacks, 5s fresh). Your next ally-hit consumes all stacks and adds +3 HP per stack to the heal. Rotation: tag the boss, then rescue-heal for a huge burst.",
+    "PULSE BOLT (attack) - Small damage + small ally-heal per hit. Hitting the BOSS builds Resonance (max 3 stacks, 5s fresh). Your next ally-hit consumes all stacks and adds +3 HP per stack to the heal. Tag the boss, then rescue-heal for a huge burst.",
     "HEAL PULSE (ability) - Rooted channel: short windup then team heal + brief damage reduction. You cannot move during the windup - place it where attacks can't reach you.",
     "SANCTUARY VEIL (utility) - Stationary circle that deletes enemy projectiles, heals allies inside (5 HP/s), and burns the boss (8 DPS). Each projectile stripped pulses an extra +3 HP to everyone inside - the more you drop it in a projectile spam, the harder it heals."
   ],
@@ -27,9 +27,9 @@ window.TUTORIAL_CHARACTER_GUIDE_BODY = {
   guardian: [
     "ROLE - Anchoring tank. Holds ground, eats hits, and pulls aggro so the squishies can work.",
     "",
-    "SHIELD CLEAVE (attack) - Wide arc in front of you. Each landing cleave grants 'Fortitude' (20% damage reduction for 3.5s, refreshes on hit). Stay in melee to keep it running.",
-    "SHIELD BURST (ability) - AoE bash + ally shields + TAUNT. The boss strongly prefers targeting you for 4s and you take 30% less damage during it. Pop it when a teammate is getting focused, or before a heavy boss telegraph so you eat it instead of your team.",
-    "AEGIS PARRY (utility) - Short parry window. Melee blocked = long stun on the boss; blocked projectiles turn back at them. A successful parry also grants nearby ALLIES 25% damage reduction for 2s, so a well-read parry saves the whole team."
+    "SHIELD CLEAVE (attack) - Wide arc in front of you. Each landing cleave grants 'Fortitude' (10% damage reduction for 1.5s, refreshes on hit). Stay in melee to keep it running.",
+    "SHIELD BURST (ability) - AoE bash + ally shields + TAUNT. The boss strongly prefers targeting you for 4s and you take 20% less damage during it. Pop it when a teammate is getting focused, or before a heavy boss telegraph so you eat it instead of your team.",
+    "AEGIS PARRY (utility) - Short parry window. Melee blocked = long stun on the boss; blocked projectiles turn back at them. A successful parry also grants nearby ALLIES 50% damage reduction for 4s, so a well-read parry saves the whole team."
   ],
   striker: [
     "ROLE - Fast melee skirmisher: two-hit chains, a slam, and a blink with a damage reward for clean dodges. Very high risk, very high reward.",
