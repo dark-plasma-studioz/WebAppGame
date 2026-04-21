@@ -243,6 +243,24 @@
       }
       .p2p-status strong { color: #ffffff; }
       .p2p-note { font-size: 11px; color: #a8c3e8; line-height: 1.4; }
+      .p2p-connected-row {
+        display: none;
+        margin-top: 12px;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px 12px 14px;
+        border-radius: 10px;
+        background: rgba(18, 52, 42, 0.55);
+        border: 1px solid rgba(90, 200, 150, 0.45);
+      }
+      .p2p-connected-row.is-visible { display: flex; }
+      .p2p-connected-row p { margin: 0; font-size: 12px; color: #d4f5e8; line-height: 1.45; }
+      .p2p-btn-primary {
+        border-color: rgba(120, 220, 170, 0.95) !important;
+        background: rgba(28, 72, 58, 0.98) !important;
+        font-size: 13px;
+        padding: 10px 12px;
+      }
       @media (max-width: 860px) {
         .p2p-row { grid-template-columns: 1fr; }
       }
@@ -333,11 +351,28 @@
       statusRight
     ]);
 
+    const connectedRow = createEl("div", { class: "p2p-connected-row", id: "p2p-connected-row" });
+    const connectedHint = createEl("p", {}, [
+      "Link is up. Both players should click the button below to open the character lobby (same as main menu → Deploy). Host picks P1 and match options; joiner picks P2."
+    ]);
+    const btnContinueLobby = createEl("button", {
+      class: "p2p-btn p2p-btn-primary",
+      type: "button"
+    }, ["Continue → Character select"]);
+    connectedRow.appendChild(connectedHint);
+    connectedRow.appendChild(btnContinueLobby);
+
+    const setConnectedUiVisible = (on) => {
+      if (on) connectedRow.classList.add("is-visible");
+      else connectedRow.classList.remove("is-visible");
+    };
+
     panel.appendChild(title);
     panel.appendChild(note);
     panel.appendChild(createEl("div", { style: "height:10px" }));
     panel.appendChild(createEl("div", { class: "p2p-row" }, [hostSection, joinSection]));
     panel.appendChild(status);
+    panel.appendChild(connectedRow);
     overlay.appendChild(panel);
 
     // State
@@ -360,6 +395,7 @@
       hostAnswerIn.value = "";
       joinOfferIn.value = "";
       joinAnswerOut.value = "";
+      setConnectedUiVisible(false);
       setStatus("Idle", "");
     };
 
@@ -400,14 +436,17 @@
       dc.binaryType = "arraybuffer";
       dc.onopen = () => {
         setStatus("Connected", role === "host" ? "Host" : "Join");
+        setConnectedUiVisible(true);
         persistSession();
         // quick handshake ping
         try { dc.send(JSON.stringify({ t: "hello", role, at: Date.now() })); } catch { /* ignore */ }
       };
       dc.onclose = () => {
+        setConnectedUiVisible(false);
         setStatus("Disconnected", "");
       };
       dc.onerror = () => {
+        setConnectedUiVisible(false);
         setStatus("DataChannel error", "");
       };
       dc.onmessage = (ev) => {
@@ -467,6 +506,27 @@
     });
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && overlay.classList.contains("is-open")) overlay.classList.remove("is-open");
+    });
+
+    btnContinueLobby.addEventListener("click", () => {
+      const g = window.__phaserGame;
+      const sc = g && g.scene;
+      if (!sc) {
+        window.alert("Game is not ready yet. Reload the page and try again.");
+        return;
+      }
+      if (sc.isActive("MainMenuScene")) {
+        sc.start("CharacterSelectScene");
+        overlay.classList.remove("is-open");
+        return;
+      }
+      if (sc.isActive("CharacterSelectScene")) {
+        overlay.classList.remove("is-open");
+        return;
+      }
+      window.alert(
+        "Return to the main menu first (ESC from most screens), then open P2P again and use Continue to open the character lobby."
+      );
     });
 
     btnHostCreate.addEventListener("click", async () => {
@@ -560,7 +620,14 @@
       overlay,
       open: () => {
         overlay.classList.add("is-open");
-        setStatus("Idle", "");
+        const sess = window.NET_SESSION;
+        if (sess && sess.dc && sess.dc.readyState === "open") {
+          setStatus("Connected", sess.role === "host" ? "Host" : sess.role === "join" ? "Join" : "");
+          setConnectedUiVisible(true);
+        } else {
+          setStatus("Idle", "");
+          setConnectedUiVisible(false);
+        }
       },
       resetState
     };

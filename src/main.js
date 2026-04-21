@@ -40,6 +40,7 @@
   let game;
   try {
     game = new Phaser.Game(window.gameConfig);
+    window.__phaserGame = game;
   } catch (err) {
     console.error("Phaser.Game failed", err);
     if (app) {
