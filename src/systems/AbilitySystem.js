@@ -144,7 +144,9 @@ class AbilitySystem {
           dealt = true;
           hit.takeDamage(AbilitySystem.scaleOutgoing(player, ability.power), player.definition.color);
           scene.spawnImpactEffect(hit.x, hit.y - 12, player.definition.color, 16);
-          hit.setVelocityX(direction * 500);
+          if (hit.body && typeof hit.setVelocityX === "function") {
+            hit.setVelocityX(direction * 500);
+          }
         }
         if (isVanguard && rallyMult > 1 && rallyMs > 0) {
           const allies = scene.players || [];
@@ -721,6 +723,15 @@ class AbilitySystem {
     }
     player.startSoulShroud(tuning.stealthDurationMs);
     player._soulShroudTuning = tuning;
+    // New behavior:
+    // - Co-op: immediately inhabit ally (no projectile travel).
+    // - Solo: mobile stealth; untargetable via boss AI (and invulnerable for safety).
+    const pool = players && players.length ? players : scene.players || [];
+    const ally = pool.find((p) => p && p !== player && p.isAlive) || null;
+    if (ally && typeof player.beginSoulPossession === "function" && typeof scene.applySoulLink === "function") {
+      player.beginSoulPossession(ally);
+      scene.applySoulLink(player, ally);
+    }
     if (!scene.isTrueHitboxView() && typeof scene.spawnSoulbondCastPulse === "function") {
       scene.spawnSoulbondCastPulse(player.x, player.y - 8, player.definition.color);
     }

@@ -15,6 +15,39 @@
     }
   }
 
+  function normalizeSessionDescriptionBlob(raw) {
+    let s = String(raw || "").trim();
+    if (!s) return null;
+
+    // Strip common Discord/Markdown wrappers.
+    // ```json\n{...}\n```
+    if (s.startsWith("```")) {
+      s = s.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/m, "").trim();
+    }
+    // Leading labels like "Offer:" or "Answer:"
+    s = s.replace(/^(offer|answer)\s*:\s*/i, "").trim();
+
+    // First parse attempt.
+    let obj = safeJsonParse(s);
+
+    // Discord sometimes adds quotes around the whole JSON, so parsing yields a string.
+    if (typeof obj === "string") {
+      const obj2 = safeJsonParse(obj);
+      if (obj2) obj = obj2;
+    }
+
+    // Some users paste a wrapper object {payload:{type,sdp}}; unwrap best-effort.
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      if (obj.payload && typeof obj.payload === "object") obj = obj.payload;
+      if (obj.desc && typeof obj.desc === "object") obj = obj.desc;
+      if (obj.data && typeof obj.data === "object") obj = obj.data;
+    }
+
+    if (!obj || typeof obj !== "object") return null;
+    if (!obj.type || !obj.sdp) return null;
+    return obj;
+  }
+
   function createEl(tag, attrs = {}, children = []) {
     const el = document.createElement(tag);
     Object.entries(attrs).forEach(([k, v]) => {
@@ -362,8 +395,7 @@
     });
 
     btnHostAccept.addEventListener("click", async () => {
-      const s = hostAnswerIn.value.trim();
-      const desc = safeJsonParse(s);
+      const desc = normalizeSessionDescriptionBlob(hostAnswerIn.value);
       if (!desc || !desc.type || !desc.sdp) {
         setStatus("Answer invalid JSON (paste full blob)", "HOST");
         return;
@@ -381,8 +413,7 @@
     btnJoinMake.addEventListener("click", async () => {
       resetState();
       role = "join";
-      const s = joinOfferIn.value.trim();
-      const offer = safeJsonParse(s);
+      const offer = normalizeSessionDescriptionBlob(joinOfferIn.value);
       if (!offer || !offer.type || !offer.sdp) {
         setStatus("Offer invalid JSON (paste full blob)", "JOIN");
         return;

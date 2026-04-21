@@ -49,6 +49,8 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     this.soulShroudDecoy = null;
     /** After soul-link projectile hits an ally: fully hidden, no attacks until shroud ends. */
     this.soulShroudSoulLinked = false;
+    /** True when Soulcaller is inhabiting an ally (co-op possession mode). */
+    this.soulShroudPossessing = false;
     this.soulLinkAlly = null;
     this.speedBuffs = [];
 
@@ -84,7 +86,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     const utilityPressed = this.controls.utility && keyJustDown(this.controls.utility);
 
     const isMovementLocked = time < this.movementLockUntil;
-    const shroudRoot = this.soulShroudActive;
+    const shroudRoot = this.soulShroudActive && this.soulShroudPossessing;
     if (shroudRoot) {
       this.setVelocity(0, 0);
       if (Number.isFinite(this.soulShroudExpiresAt)) {
@@ -208,6 +210,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
 
   tryBasicAttack(boss) {
     if (this.soulShroudSoulLinked) return;
+    if (this.soulShroudActive && this.soulShroudPossessing) return;
     if (!boss || !boss.active) return;
     const basicAttack = this.definition.basicAttack || {};
     const type = basicAttack.type || "spearThrust";
@@ -387,7 +390,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
   }
 
   applyMeleeHit(boss, damage, range, verticalRange, allowBehind, behindPad = 0, yOffset = 0, visuals = {}) {
-    if (this.soulShroudActive) return;
+    if (this.soulShroudActive && this.soulShroudPossessing) return;
     const forwardReach = Math.max(20, range);
     const backwardsReach = allowBehind ? Math.max(12, behindPad) : 0;
     const width = forwardReach + backwardsReach;
@@ -435,7 +438,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
   }
 
   applyFanHit(boss, damage, radius, spreadDeg) {
-    if (this.soulShroudActive) return;
+    if (this.soulShroudActive && this.soulShroudPossessing) return;
     const hitRadius = Math.max(20, radius);
     this.scene.playFanAttackVisual(this.x, this.y - 2, this.facing, hitRadius, spreadDeg, this.definition.color, 100, this.definition.id);
 
@@ -656,11 +659,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     const t = ba?.tuning || {};
     if (this.soulShroudSoulLinked) return;
     if (this.soulShroudActive) {
-      const pool = activePlayers && activePlayers.length ? activePlayers : (this.scene?.players || []);
-      const ally = pool.find((p) => p && p !== this && p.isAlive);
-      if (ally && typeof this.scene.spawnSoulLinkProjectile === "function") {
-        this.scene.spawnSoulLinkProjectile(this, ally);
-      }
+      // New soul shroud: possession is immediate in co-op; solo shroud doesn't redirect attacks.
       return;
     }
     if (!boss || !boss.active) return;
@@ -689,6 +688,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     this.soulShroudSoulLinked = false;
     this.soulLinkAlly = null;
     this.soulShroudActive = true;
+    this.soulShroudPossessing = false;
     this.soulShroudStartedAt = this.scene.time.now;
     this.soulShroudDurationMs = durationMs;
     this.soulShroudExpiresAt = this.scene.time.now + durationMs;
@@ -698,15 +698,12 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     }
   }
 
-  onSoulLinkConnected(ally) {
+  beginSoulPossession(ally) {
     if (!ally?.active || !ally.isAlive) return;
     this.soulShroudSoulLinked = true;
+    this.soulShroudPossessing = true;
     this.soulLinkAlly = ally;
     this.setAlpha(0);
-    if (typeof this.scene?.removeSoulcallerDecoy === "function") {
-      this.scene.removeSoulcallerDecoy(this);
-    }
-    this.soulShroudDecoy = null;
   }
 
   /**
@@ -715,9 +712,6 @@ class Player extends Phaser.Physics.Arcade.Sprite {
   endSoulShroud(earlyCancel = false) {
     if (!this.soulShroudActive) return;
     const now = this.scene?.time?.now ?? 0;
-    const elapsed = now - (this.soulShroudStartedAt || now);
-    const totalDur = this.soulShroudDurationMs || 6000;
-    const timeFrac = Phaser.Math.Clamp(elapsed / totalDur, 0, 1);
     const allyFromLink = this.soulLinkAlly;
     const pool = this.scene?.players || [];
     const allyResolved =
@@ -729,6 +723,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     }
     this.soulShroudActive = false;
     this.soulShroudSoulLinked = false;
+    this.soulShroudPossessing = false;
     this.soulLinkAlly = null;
     this.soulShroudExpiresAt = 0;
     if (allyResolved?.active && allyResolved.isAlive) {
@@ -745,13 +740,6 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     this.soulShroudDecoy = null;
     if (typeof this.scene?.removeSoulcallerDecoy === "function") {
       this.scene.removeSoulcallerDecoy(this);
-    }
-    const t = this._soulShroudTuning || {};
-    const maxDmg = t.shroudExplosionMaxDamage || 40;
-    const radius = t.shroudExplosionRadius || 120;
-    const damage = Math.max(1, Math.round(maxDmg * (1 - timeFrac)));
-    if (earlyCancel && typeof this.scene?.fireSoulShroudExplosion === "function") {
-      this.scene.fireSoulShroudExplosion(this, damage, radius);
     }
   }
 

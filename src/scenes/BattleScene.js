@@ -6018,8 +6018,8 @@ class BattleScene extends Phaser.Scene {
     const spdMult = t.allySpeedMult || 1.5;
     ally.applyOutgoingDamageBuff(dmgMult, durLeft, "soulcallerPossession");
     ally.applySpeedBuff(spdMult, durLeft, "soulcallerPossession");
-    if (typeof owner.onSoulLinkConnected === "function") {
-      owner.onSoulLinkConnected(ally);
+    if (typeof owner.beginSoulPossession === "function") {
+      owner.beginSoulPossession(ally);
     }
     this.spawnSoulLinkBondVfx(owner, ally);
     this.spawnBuffIcon(ally, "heal", 0x58d8e8, Math.min(1200, durLeft));
@@ -6264,28 +6264,7 @@ class BattleScene extends Phaser.Scene {
         });
       }
     }
-    if (this._netAuthHost && this.net?.dc?.readyState === "open") {
-      const id = `bp_${++this._netObjSeq}`;
-      projectile._netId = id;
-      this._netGhostById.set(id, projectile);
-      this.net.sendJson({
-        t: "evSpawn",
-        kind: "boss",
-        id,
-        x: projectile.x,
-        y: projectile.y,
-        vx: projectile.body?.velocity?.x || 0,
-        vy: projectile.body?.velocity?.y || 0,
-        texKey,
-        tint: projectile.tintTopLeft,
-        alpha: projectile.alpha,
-        sx: projectile.scaleX,
-        sy: projectile.scaleY,
-        dmg: projectile.damage,
-        effectColor: projectile.effectColor
-      });
-    }
-    return projectile;
+    // No projectile spawned here; this is a pure AOE + VFX.
   }
 
   drawBossVulnerabilityIndicator() {
@@ -12563,6 +12542,10 @@ class BattleScene extends Phaser.Scene {
     }
     this.setBattlePauseUiVisible(true);
     this.battlePauseMenuOpen = true;
+    // Prevent interacting with game objects behind pause UI.
+    if (this.input && typeof this.input.setTopOnly === "function") {
+      this.input.setTopOnly(true);
+    }
     this.physics.pause();
     this.time.paused = true;
   }
@@ -12570,6 +12553,9 @@ class BattleScene extends Phaser.Scene {
   closeBattlePauseMenu() {
     this.battlePauseMenuOpen = false;
     this.setBattlePauseUiVisible(false);
+    if (this.input && typeof this.input.setTopOnly === "function") {
+      this.input.setTopOnly(false);
+    }
     this.physics.resume();
     this.time.paused = false;
   }
