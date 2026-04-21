@@ -529,18 +529,6 @@
       setPhaserBlockedByOverlay(!!open);
     };
 
-    // Stop events from reaching the canvas / Phaser (capture phase).
-    ["pointerdown", "pointerup", "click", "wheel", "touchstart", "touchmove", "touchend"].forEach((type) => {
-      overlay.addEventListener(
-        type,
-        (e) => {
-          if (!overlay.classList.contains("is-open")) return;
-          e.stopPropagation();
-        },
-        true
-      );
-    });
-
     btnClose.addEventListener("click", () => {
       setOverlayOpen(false);
     });
