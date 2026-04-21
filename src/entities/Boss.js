@@ -3228,12 +3228,14 @@ class Boss extends Phaser.Physics.Arcade.Sprite {
     const id = typeof safeMeta?.id === "string" ? safeMeta.id : "vuln";
     const label = typeof safeMeta?.label === "string" ? safeMeta.label : "VULN";
     const color = Number.isFinite(safeMeta?.color) ? safeMeta.color : 0xffffff;
+    const desc = typeof safeMeta?.desc === "string" ? safeMeta.desc : "";
     this.vulnerabilityEffects.push({
       mult: Phaser.Math.Clamp(mult, 1, 2),
       expiresAt: now + (Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0),
       id,
       label,
-      color
+      color,
+      desc
     });
   }
 

@@ -156,7 +156,77 @@ class CharacterSelectScene extends Phaser.Scene {
       this.input.keyboard.enabled = true;
     }
 
+    // P2P lobby wiring (host decides match; joiner only picks P2 character).
+    this.net = window.NET_SESSION && window.NET_SESSION.kind === "webrtc" && window.NET_SESSION.dc?.readyState === "open"
+      ? window.NET_SESSION
+      : null;
+    this.netRole = this.net?.role || null; // "host" | "join"
+    this.netActive = !!this.netRole;
+    this._netLastSentP1 = null;
+    this._netLastSentP1Locked = null;
+    this._netLastSentP2 = null;
+    this._netLastSentP2Locked = null;
+
+    if (this.netActive) {
+      // P2 always exists in P2P mode.
+      this.selected.p2Joined = true;
+      if (this.netRole === "join") {
+        // Joiner cannot control P1 or start the match.
+        this.selected.p1Locked = true;
+      }
+      this.net.onMessage = (raw) => this._onNetMessage(raw);
+      this.events.once("shutdown", () => {
+        if (window.NET_SESSION && window.NET_SESSION.onMessage === this._onNetMessage) {
+          window.NET_SESSION.onMessage = null;
+        }
+      });
+    }
+
     this.refreshUi();
+  }
+
+  _onNetMessage(raw) {
+    if (!this.netActive) return;
+    let msg = null;
+    try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return; }
+    if (!msg || typeof msg !== "object") return;
+
+    if (this.netRole === "host") {
+      if (msg.t === "p2pick") {
+        const idx = Number.isFinite(msg.idx) ? msg.idx : -1;
+        if (idx >= 0 && idx < window.CHARACTERS.length && idx !== this.selected.p1Index) {
+          this.selected.p2Index = idx;
+        }
+        return;
+      }
+      if (msg.t === "p2lock") {
+        this.selected.p2Locked = !!msg.locked;
+      }
+      return;
+    }
+
+    // join side
+    if (msg.t === "p1state") {
+      const idx = Number.isFinite(msg.idx) ? msg.idx : 0;
+      if (idx >= 0 && idx < window.CHARACTERS.length) {
+        this.selected.p1Index = idx;
+      }
+      this.selected.p1Locked = !!msg.locked;
+      if (this.selected.p2Index === this.selected.p1Index) {
+        this.selected.p2Index = Phaser.Math.Wrap(this.selected.p1Index + 1, 0, window.CHARACTERS.length);
+      }
+      return;
+    }
+    if (msg.t === "goPrep") {
+      if (msg.payload && typeof msg.payload === "object") {
+        this.scene.start("PrepScene", msg.payload);
+      }
+    }
+    if (msg.t === "sceneSync" && msg.sceneKey === "PrepScene") {
+      if (msg.payload && typeof msg.payload === "object") {
+        this.scene.start("PrepScene", msg.payload);
+      }
+    }
   }
 
   createBackdrop() {
@@ -363,7 +433,10 @@ class CharacterSelectScene extends Phaser.Scene {
   }
 
   update() {
-    if (!this.selected.p1Locked) {
+    const p2pJoin = this.netActive && this.netRole === "join";
+    const p2pHost = this.netActive && this.netRole === "host";
+
+    if (!p2pJoin && !this.selected.p1Locked) {
       if (Phaser.Input.Keyboard.JustDown(this.keys.p1Left)) {
         this.movePick("p1", -1);
       }
@@ -375,11 +448,11 @@ class CharacterSelectScene extends Phaser.Scene {
       }
     }
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys.p2Join)) {
+    if (!this.netActive && Phaser.Input.Keyboard.JustDown(this.keys.p2Join)) {
       this.toggleP2Join();
     }
 
-    if (this.selected.p2Joined && !this.selected.p2Locked) {
+    if (this.selected.p2Joined && !this.selected.p2Locked && !p2pHost) {
       if (Phaser.Input.Keyboard.JustDown(this.keys.p2Left)) {
         this.movePick("p2", -1);
       }
@@ -396,7 +469,7 @@ class CharacterSelectScene extends Phaser.Scene {
       this.selected.p2Locked = false;
     }
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys.start) && this.tryStartBattle()) {
+    if (!p2pJoin && Phaser.Input.Keyboard.JustDown(this.keys.start) && this.tryStartBattle()) {
       return;
     }
 
@@ -411,6 +484,26 @@ class CharacterSelectScene extends Phaser.Scene {
     }
 
     this.refreshUi();
+
+    // P2P: send state updates.
+    if (this.netActive && this.net?.dc?.readyState === "open") {
+      if (p2pHost) {
+        if (this.selected.p1Index !== this._netLastSentP1 || this.selected.p1Locked !== this._netLastSentP1Locked) {
+          this._netLastSentP1 = this.selected.p1Index;
+          this._netLastSentP1Locked = this.selected.p1Locked;
+          this.net.sendJson({ t: "p1state", idx: this.selected.p1Index, locked: this.selected.p1Locked });
+        }
+      } else {
+        if (this.selected.p2Index !== this._netLastSentP2) {
+          this._netLastSentP2 = this.selected.p2Index;
+          this.net.sendJson({ t: "p2pick", idx: this.selected.p2Index });
+        }
+        if (this.selected.p2Locked !== this._netLastSentP2Locked) {
+          this._netLastSentP2Locked = this.selected.p2Locked;
+          this.net.sendJson({ t: "p2lock", locked: this.selected.p2Locked });
+        }
+      }
+    }
   }
 
   movePick(playerSlot, direction) {
@@ -465,6 +558,12 @@ class CharacterSelectScene extends Phaser.Scene {
         return;
       }
       const payload = { selectedPlayers: this.buildSelectedPlayers() };
+      if (this.netActive && this.netRole === "host" && this.net?.dc?.readyState === "open") {
+        this.net.sendJson({ t: "goPrep", payload });
+        if (typeof this.net.sendSceneSync === "function") {
+          this.net.sendSceneSync("PrepScene", payload);
+        }
+      }
       scenePlugin.start("PrepScene", payload);
     });
     return true;

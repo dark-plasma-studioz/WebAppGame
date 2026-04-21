@@ -27,6 +27,36 @@ class MapSelectScene extends Phaser.Scene {
     if (this.input?.keyboard) {
       this.input.keyboard.enabled = true;
     }
+
+    // P2P: joiner waits; host decides arena and starts battle.
+    this.net = window.NET_SESSION && window.NET_SESSION.kind === "webrtc" && window.NET_SESSION.dc?.readyState === "open"
+      ? window.NET_SESSION
+      : null;
+    this.netRole = this.net?.role || null;
+    if (this.netRole === "join") {
+      this.add.text(480, 500, "P2P JOINER: waiting for host arena + deploy…", {
+        fontSize: "11px",
+        color: "#ffd4a4",
+        fontStyle: "bold",
+        fontFamily: "Consolas, Monaco, 'Courier New', monospace"
+      }).setOrigin(0.5);
+      this.net.onMessage = (raw) => this._onNetMessage(raw);
+    }
+  }
+
+  _onNetMessage(raw) {
+    if (this.netRole !== "join") return;
+    let msg = null;
+    try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return; }
+    if (!msg || typeof msg !== "object") return;
+    if (msg.t === "goBattle" && msg.payload && typeof msg.payload === "object") {
+      this.scene.start("BattleScene", msg.payload);
+    }
+    if (msg.t === "sceneSync" && msg.sceneKey === "BattleScene") {
+      if (msg.payload && typeof msg.payload === "object") {
+        this.scene.start("BattleScene", msg.payload);
+      }
+    }
   }
 
   createBackdrop() {
@@ -449,6 +479,27 @@ class MapSelectScene extends Phaser.Scene {
   launchBattle() {
     const arena = this.arenas[this.selectedIndex];
     if (!arena) return;
+    const net = window.NET_SESSION;
+    if (net && net.kind === "webrtc" && net.role === "join") return;
+    if (net && net.kind === "webrtc" && net.role === "host" && net.dc?.readyState === "open") {
+      net.sendJson({
+        t: "goBattle",
+        payload: {
+          selectedPlayers: this.selectedPlayers,
+          difficulty: this.difficultyId,
+          bossId: this.bossChoiceId,
+          arenaId: arena.id
+        }
+      });
+      if (typeof net.sendSceneSync === "function") {
+        net.sendSceneSync("BattleScene", {
+          selectedPlayers: this.selectedPlayers,
+          difficulty: this.difficultyId,
+          bossId: this.bossChoiceId,
+          arenaId: arena.id
+        });
+      }
+    }
     this.scene.start("BattleScene", {
       selectedPlayers: this.selectedPlayers,
       difficulty: this.difficultyId,
@@ -458,6 +509,8 @@ class MapSelectScene extends Phaser.Scene {
   }
 
   update() {
+    const net = window.NET_SESSION;
+    if (net && net.kind === "webrtc" && net.role === "join") return;
     if (Phaser.Input.Keyboard.JustDown(this.keys.esc)) {
       this.scene.start("PrepScene", {
         selectedPlayers: this.selectedPlayers,

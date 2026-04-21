@@ -96,9 +96,14 @@ class MainMenuScene extends Phaser.Scene {
     mkBtn(372, "Settings", "HUD layout + combat keybinds (saved)", () => {
       this.goSettings();
     });
+    mkBtn(448, "P2P Connect", "WebRTC copy/paste codes (no server)", () => {
+      if (window.P2P && typeof window.P2P.open === "function") {
+        window.P2P.open();
+      }
+    });
 
     this.add
-      .text(480, 448, "Click a button  ·  1 Deploy  ·  2 Tutorial  ·  3 Settings", {
+      .text(480, 510, "Click a button  ·  1 Deploy  ·  2 Tutorial  ·  3 Settings", {
         fontSize: "11px",
         color: "#6a86a8",
         fontFamily: "Consolas, Monaco, 'Courier New', monospace"

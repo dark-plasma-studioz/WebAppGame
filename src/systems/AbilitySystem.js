@@ -515,13 +515,7 @@ class AbilitySystem {
 
     if (player.definition.id === "guardian") {
       const tauntMs = Number.isFinite(tuning.tauntDurationMs) ? tuning.tauntDurationMs : 4000;
-      const tauntMult = Number.isFinite(tuning.tauntDamageMultiplier) ? tuning.tauntDamageMultiplier : 0.70;
       player.guardianTauntUntil = scene.time.now + tauntMs;
-      if (typeof player.applyTaggedDamageReduction === "function") {
-        player.applyTaggedDamageReduction("guardianTaunt", tauntMult, tauntMs);
-      } else {
-        player.applyDamageReduction(tauntMult, tauntMs);
-      }
       if (typeof scene.spawnGuardianTauntAura === "function") {
         scene.spawnGuardianTauntAura(player, tauntMs);
       }

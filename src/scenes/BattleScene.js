@@ -125,6 +125,16 @@ class BattleScene extends Phaser.Scene {
       this.selectedPlayers = [{ slot: 1, characterId: window.CHARACTERS[0].id }];
     }
 
+    // P2P authoritative mode flags.
+    this.net = window.NET_SESSION && window.NET_SESSION.kind === "webrtc" && window.NET_SESSION.dc?.readyState === "open"
+      ? window.NET_SESSION
+      : null;
+    this._netAuthEnabled = !!this.net;
+    this._netAuthJoiner = this._netAuthEnabled && this.net.role === "join";
+    this._netAuthHost = this._netAuthEnabled && this.net.role === "host";
+    this._netObjSeq = 0;
+    this._netGhostById = new Map();
+
     this.applyDifficultySceneTuning();
 
     if (this.input?.keyboard) {
@@ -167,7 +177,39 @@ class BattleScene extends Phaser.Scene {
 
     this.players = this.selectedPlayers.map((selection, idx) => {
       const definition = window.getCharacterById(selection.characterId);
-      const keys = this.input.keyboard.addKeys(buildPlayerControlsKeyMap(selection.slot));
+      const net = window.NET_SESSION;
+      const netActive = !!(net && net.kind === "webrtc" && net.dc && net.dc.readyState === "open");
+      const localSlot = netActive ? (net.role === "join" ? 2 : 1) : null;
+      const remoteSlot = netActive ? (localSlot === 1 ? 2 : 1) : null;
+
+      const makeVirtualKey = () => ({ isDown: false, _virtual: true, _virtualJustDown: false });
+      const makeVirtualControls = () => ({
+        left: makeVirtualKey(),
+        right: makeVirtualKey(),
+        jump: makeVirtualKey(),
+        attack: makeVirtualKey(),
+        ability: makeVirtualKey(),
+        utility: makeVirtualKey()
+      });
+
+      if (netActive && selection.slot === remoteSlot) {
+        if (!this._netVirtualBySlot) this._netVirtualBySlot = {};
+        const vk = makeVirtualControls();
+        this._netVirtualBySlot[selection.slot] = vk;
+        // record for update loop
+        this._netActive = true;
+        this._netLocalSlot = localSlot;
+        this._netRemoteSlot = remoteSlot;
+        this._netLastRemoteInput = this._netLastRemoteInput || {};
+        this._netLastSentAt = this._netLastSentAt || 0;
+        this._netLastSnapSentAt = this._netLastSnapSentAt || 0;
+        this._netLocalSeq = this._netLocalSeq || 0;
+        this._netRemoteSeq = this._netRemoteSeq || 0;
+        // we pass virtual keys to the Player so JustDown works via _virtualJustDown.
+        var keys = vk; // eslint-disable-line no-var
+      } else {
+        var keys = this.input.keyboard.addKeys(buildPlayerControlsKeyMap(selection.slot)); // eslint-disable-line no-var
+      }
       const textureIndex = window.CHARACTERS.findIndex((character) => character.id === selection.characterId);
       const spawn = this.selectedArena.playerSpawns[Math.min(idx, this.selectedArena.playerSpawns.length - 1)];
       const player = new window.Player(
@@ -188,6 +230,11 @@ class BattleScene extends Phaser.Scene {
       player.setDepth(DEPTH.PLAYER);
       return player;
     });
+
+    // Wire net message handler (after players exist).
+    if (this._netAuthEnabled && window.NET_SESSION) {
+      window.NET_SESSION.onMessage = (raw) => this._onNetMessage(raw);
+    }
 
     let bossDefinition;
     if (this.bossChoiceId === "random") {
@@ -288,7 +335,7 @@ class BattleScene extends Phaser.Scene {
           target.applyVulnerability(
             projectile.spiritDebuffMult || 1.1,
             projectile.spiritDebuffMs || 3000,
-            { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8 }
+            { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8, desc: "Boss takes increased damage from all sources." }
           );
           this.spawnSpiritDebuffVfx(target, projectile.spiritCharged);
         }
@@ -324,7 +371,7 @@ class BattleScene extends Phaser.Scene {
             target.applyVulnerability(
               projectile.spiritDebuffMult || 1.1,
               projectile.spiritDebuffMs || 3000,
-              { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8 }
+              { id: "soulcallerSpiritHex", label: "SPIRIT HEX", color: 0x58d8e8, desc: "Boss takes increased damage from all sources." }
             );
             this.spawnSpiritDebuffVfx(target, projectile.spiritCharged);
           }
@@ -481,6 +528,122 @@ class BattleScene extends Phaser.Scene {
     this.gameState = "battle";
   }
 
+  _applyNetInputToVirtualControls(slot, input) {
+    if (!this._netVirtualBySlot || !slot) return;
+    const c = this._netVirtualBySlot[slot];
+    if (!c) return;
+    const setKey = (keyObj, nextDown) => {
+      const prev = !!keyObj.isDown;
+      keyObj.isDown = !!nextDown;
+      if (!prev && keyObj.isDown) keyObj._virtualJustDown = true;
+    };
+    setKey(c.left, input?.l);
+    setKey(c.right, input?.r);
+    setKey(c.jump, input?.j);
+    setKey(c.attack, input?.a);
+    setKey(c.ability, input?.ab);
+    setKey(c.utility, input?.u);
+  }
+
+  _onNetMessage(raw) {
+    const net = window.NET_SESSION;
+    if (!this._netAuthEnabled || !net) return;
+    let msg = null;
+    try {
+      msg = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg !== "object") return;
+    if (msg.t === "in") {
+      const seq = Number.isFinite(msg.seq) ? msg.seq : 0;
+      if (seq <= (this._netRemoteSeq || 0)) return;
+      this._netRemoteSeq = seq;
+      this._netLastRemoteInput = msg.d || {};
+      this._applyNetInputToVirtualControls(this._netRemoteSlot, this._netLastRemoteInput);
+      return;
+    }
+    if (msg.t === "snap" && net.role === "join") {
+      // Host snapshot: gently correct key entities.
+      const snap = msg.s || {};
+      const bySlot = {};
+      (this.players || []).forEach((p) => { bySlot[p?.label === "P2" ? 2 : 1] = p; });
+      const applyEnt = (ent, st) => {
+        if (!ent || !st) return;
+        if (Number.isFinite(st.x) && Number.isFinite(st.y)) {
+          ent.setPosition(st.x, st.y);
+          if (ent.body && typeof ent.body.reset === "function") ent.body.reset(st.x, st.y);
+        }
+        if (ent.body && st.vx != null && st.vy != null) {
+          ent.setVelocity(st.vx, st.vy);
+        }
+        if (Number.isFinite(st.facing)) ent.facing = st.facing >= 0 ? 1 : -1;
+        if (Number.isFinite(st.alpha) && typeof ent.setAlpha === "function") ent.setAlpha(st.alpha);
+        if (Number.isFinite(st.inv)) ent.invulnerableUntil = st.inv;
+        if (st.sh != null) ent.soulShroudActive = !!st.sh;
+        if (Number.isFinite(st.shExp)) ent.soulShroudExpiresAt = st.shExp;
+        if (Number.isFinite(st.h)) ent.health = st.h;
+        if (Number.isFinite(st.mh)) ent.maxHealth = st.mh;
+        if (st.alive === false) ent.isAlive = false;
+      };
+      applyEnt(bySlot[1], snap.p1);
+      applyEnt(bySlot[2], snap.p2);
+      if (this.boss && snap.boss) {
+        applyEnt(this.boss, snap.boss);
+        if (Number.isFinite(snap.boss.stunnedUntil)) this.boss.stunnedUntil = snap.boss.stunnedUntil;
+        if (Array.isArray(snap.boss.vuln)) this.boss.vulnerabilityEffects = snap.boss.vuln;
+      }
+      if (this.bossTwin && snap.twin) {
+        applyEnt(this.bossTwin, snap.twin);
+        if (Number.isFinite(snap.twin.stunnedUntil)) this.bossTwin.stunnedUntil = snap.twin.stunnedUntil;
+        if (Array.isArray(snap.twin.vuln)) this.bossTwin.vulnerabilityEffects = snap.twin.vuln;
+      }
+      return;
+    }
+
+    if (msg.t === "evSpawn" && net.role === "join") {
+      const id = msg.id;
+      if (!id || this._netGhostById.has(id)) return;
+      const kind = msg.kind;
+      const texKey = msg.texKey || (kind === "boss" ? "projectile_boss" : "projectile_player");
+      const x = Number.isFinite(msg.x) ? msg.x : 0;
+      const y = Number.isFinite(msg.y) ? msg.y : 0;
+      const vx = Number.isFinite(msg.vx) ? msg.vx : 0;
+      const vy = Number.isFinite(msg.vy) ? msg.vy : 0;
+      const group = kind === "boss" ? this.bossProjectiles : this.playerProjectiles;
+      const p = group.create(x, y, texKey);
+      p.setDepth(DEPTH.PROJECTILE);
+      p._netId = id;
+      if (p.body) p.setVelocity(vx, vy);
+      if (Number.isFinite(msg.sx) && Number.isFinite(msg.sy)) p.setScale(msg.sx, msg.sy);
+      if (Number.isFinite(msg.alpha)) p.setAlpha(msg.alpha);
+      const tint = Number.isFinite(msg.tint) ? msg.tint : Number.isFinite(msg.effectColor) ? msg.effectColor : null;
+      if (tint != null && p.setTint) p.setTint(tint);
+      p.damage = msg.dmg;
+      p.effectColor = msg.effectColor;
+      p.visualStyle = msg.visualStyle || (kind === "boss" ? "boss" : "default");
+      p.spawnX = x;
+      p.spawnY = y;
+      this._netGhostById.set(id, p);
+      return;
+    }
+
+    if (msg.t === "evDespawn" && net.role === "join") {
+      const id = msg.id;
+      const obj = id ? this._netGhostById.get(id) : null;
+      if (obj && obj.active) {
+        this._netGhostById.delete(id);
+        try {
+          if (obj.body) obj.disableBody(true, true);
+          else obj.destroy(true);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+  }
+
   update(time) {
     if (this.gameState !== "battle") return;
 
@@ -495,6 +658,20 @@ class BattleScene extends Phaser.Scene {
     if (this.battlePauseMenuOpen) {
       this.hud.update();
       return;
+    }
+
+    // Authoritative P2P: joiner only sends inputs + renders host state.
+    if (this._netAuthEnabled && window.NET_SESSION?.dc?.readyState === "open") {
+      this._netTick(time);
+      if (this._netAuthJoiner) {
+        // Minimal render-only update loop.
+        this.drawBossStatusBadges(time);
+        this.drawPlayerStatusBadges(time);
+        this.renderTrueHitboxOverlay();
+        this.hud.update();
+        this.updateBossStunIndicator(time);
+        return;
+      }
     }
 
     this.players.forEach((player) => player.update(time, this.boss, this.players));
@@ -551,6 +728,77 @@ class BattleScene extends Phaser.Scene {
     this.updateBossStunIndicator(time);
   }
 
+  _netTick(time) {
+    const net = window.NET_SESSION;
+    if (!net || !net.dc || net.dc.readyState !== "open") return;
+    const now = Number.isFinite(time) ? time : this.time.now;
+
+    // Joiner sends local input at ~30Hz.
+    if (net.role === "join") {
+      const sendEvery = 33;
+      if (!this._netLastSentAt || now - this._netLastSentAt >= sendEvery) {
+        this._netLastSentAt = now;
+        const localSlot = this._netLocalSlot;
+        const localPlayer = (this.players || []).find((p) => p && p.label === `P${localSlot}`) || null;
+        const c = localPlayer?.controls;
+        if (c) {
+          const d = {
+            l: !!c.left?.isDown,
+            r: !!c.right?.isDown,
+            j: !!c.jump?.isDown,
+            a: !!c.attack?.isDown,
+            ab: !!c.ability?.isDown,
+            u: !!c.utility?.isDown
+          };
+          this._netLocalSeq = (this._netLocalSeq || 0) + 1;
+          net.sendJson({ t: "in", seq: this._netLocalSeq, d });
+        }
+      }
+    }
+
+    // Host sends a lightweight snapshot at ~10Hz to reduce drift.
+    if (net.role === "host") {
+      const snapEvery = 100;
+      if (!this._netLastSnapSentAt || now - this._netLastSnapSentAt >= snapEvery) {
+        this._netLastSnapSentAt = now;
+        const p1 = (this.players || []).find((p) => p && p.label === "P1") || null;
+        const p2 = (this.players || []).find((p) => p && p.label === "P2") || null;
+        const packPlayer = (e) => (e && e.active ? {
+          x: e.x, y: e.y,
+          vx: e.body?.velocity?.x || 0,
+          vy: e.body?.velocity?.y || 0,
+          facing: Number.isFinite(e.facing) ? e.facing : 1,
+          alpha: Number.isFinite(e.alpha) ? e.alpha : 1,
+          h: Number.isFinite(e.health) ? e.health : undefined,
+          mh: Number.isFinite(e.maxHealth) ? e.maxHealth : undefined,
+          alive: e.isAlive !== false,
+          inv: Number.isFinite(e.invulnerableUntil) ? e.invulnerableUntil : 0,
+          sh: !!e.soulShroudActive,
+          shExp: Number.isFinite(e.soulShroudExpiresAt) ? e.soulShroudExpiresAt : 0
+        } : null);
+        const packBoss = (e) => (e && e.active ? {
+          x: e.x, y: e.y,
+          vx: e.body?.velocity?.x || 0,
+          vy: e.body?.velocity?.y || 0,
+          h: Number.isFinite(e.health) ? e.health : undefined,
+          mh: Number.isFinite(e.maxHealth) ? e.maxHealth : undefined,
+          alive: true,
+          stunnedUntil: Number.isFinite(e.stunnedUntil) ? e.stunnedUntil : 0,
+          vuln: Array.isArray(e.vulnerabilityEffects) ? e.vulnerabilityEffects : []
+        } : null);
+        net.sendJson({
+          t: "snap",
+          s: {
+            p1: packPlayer(p1),
+            p2: packPlayer(p2),
+            boss: packBoss(this.boss),
+            twin: packBoss(this.bossTwin)
+          }
+        });
+      }
+    }
+  }
+
   drawBossStatusBadges(time) {
     // Draw a small badge row above each active boss's head.
     // Today we only have "vulnerability" effects, but this method is structured
@@ -575,15 +823,6 @@ class BattleScene extends Phaser.Scene {
     root.setDepth(DEPTH.PLAYER_FX + 5);
     player._statusBadgeRoot = root;
     player._statusBadgeG = this.add.graphics();
-    player._statusBadgeMeasureText = this.add.text(0, 0, "", {
-      fontFamily: "Arial",
-      fontSize: "13px",
-      color: "#ffffff",
-      stroke: "#000000",
-      strokeThickness: 3
-    });
-    player._statusBadgeMeasureText.setOrigin(0.5, 0.5);
-    player._statusBadgeMeasureText.setVisible(false);
     root.add([player._statusBadgeG]);
     return root;
   }
@@ -668,15 +907,24 @@ class BattleScene extends Phaser.Scene {
     const root = this._ensurePlayerStatusUi(player);
     if (!root) return;
     const g = player._statusBadgeG;
-    const measure = player._statusBadgeMeasureText;
-    if (!g || !measure) return;
+    if (!g) return;
     g.clear();
     if (!player.active || !player.isAlive) {
       root.setVisible(false);
       return;
     }
 
-    const list = this._getPlayerStatusEntries(player, now).slice(0, 4);
+    // Clean up legacy text badges if they exist from older versions.
+    if (player._statusBadgeTexts?.length) {
+      player._statusBadgeTexts.forEach((t) => { try { t.destroy(); } catch (_) {} });
+      player._statusBadgeTexts = [];
+    }
+    if (player._statusBadgeMeasureText) {
+      try { player._statusBadgeMeasureText.destroy(); } catch (_) {}
+      player._statusBadgeMeasureText = null;
+    }
+
+    const list = this._getPlayerStatusEntries(player, now).slice(0, 8);
     if (!list.length) {
       root.setVisible(false);
       return;
@@ -687,55 +935,38 @@ class BattleScene extends Phaser.Scene {
     const py = player.y - 58 + Math.sin(now * 0.008 + (player.label === "P2" ? 1.1 : 0)) * 1.2;
     root.setPosition(px, py);
 
-    const padX = 10;
-    const padY = 6;
-    const badgeGap = 10;
-    const pulse = 0.78 + 0.22 * Math.sin(now * 0.012);
-    const bg = 0x000000;
-
-    const badges = list.map((e) => {
-      const f = this._formatPlayerStatusBadge(e, now);
-      measure.setText(f.label);
-      const w = Math.min(330, measure.width + padX * 2 + 18);
-      const h = Math.max(22, measure.height + padY * 2);
-      return { entry: e, ...f, w, h };
-    });
-
-    const totalW = badges.reduce((sum, b) => sum + b.w, 0) + Math.max(0, badges.length - 1) * badgeGap;
+    // Icon-only statuses above head (no name/timer). Blink when < 1s remaining.
+    const gap = 18;
+    const totalW = list.length * gap - gap;
     let x = -totalW / 2;
-    badges.forEach((b) => {
-      g.fillStyle(bg, 0.50);
-      g.lineStyle(2, b.color, 0.86);
-      g.fillRoundedRect(x, -b.h / 2, b.w, b.h, 8);
-      g.strokeRoundedRect(x, -b.h / 2, b.w, b.h, 8);
-      g.fillStyle(b.color, 0.95 * pulse);
-      g.fillCircle(x + 14, 0, 5);
-      g.lineStyle(2, b.color, 0.65 * pulse);
-      g.strokeCircle(x + 14, 0, 8);
-      x += b.w + badgeGap;
-    });
+    list.forEach((e) => {
+      const f = this._formatPlayerStatusBadge(e, now);
+      const col = f.color || 0xffffff;
+      const leftMs = (e.expiresAt || 0) - now;
+      const blink = leftMs > 0 && leftMs <= 1000;
+      const blinkA = blink ? (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(now * 0.032))) : 1;
+      const a = 0.92 * blinkA;
 
-    if (!player._statusBadgeTexts) player._statusBadgeTexts = [];
-    const arr = player._statusBadgeTexts;
-    while (arr.length < badges.length) {
-      const t = this.add.text(0, 0, "", {
-        fontFamily: "Arial",
-        fontSize: "13px",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 3
-      });
-      t.setOrigin(0.5, 0.5);
-      root.add(t);
-      arr.push(t);
-    }
-    for (let i = 0; i < arr.length; i += 1) arr[i].setVisible(i < badges.length);
-    x = -totalW / 2;
-    badges.forEach((b, idx) => {
-      const t = arr[idx];
-      t.setText(b.label);
-      t.setPosition(x + b.w / 2 + 6, 0);
-      x += b.w + badgeGap;
+      g.lineStyle(2, col, 0.95 * a);
+      g.fillStyle(0x000000, 0.25 * a);
+      g.fillCircle(x, 0, 7);
+      g.strokeCircle(x, 0, 7);
+      g.fillStyle(col, 0.85 * a);
+
+      // Symbol by tag.
+      const tag = e.tag || "";
+      if (tag.includes("vanguardRally")) {
+        g.fillTriangle(x, -5, x - 5, 5, x + 5, 5);
+      } else if (tag.includes("soulcallerPossession")) {
+        g.fillRect(x - 4, -4, 8, 8);
+      } else if (tag.includes("guardianFortitude")) {
+        g.fillCircle(x, 0, 3.5);
+        g.lineStyle(1.5, 0xffffff, 0.55 * a);
+        g.strokeCircle(x, 0, 5.5);
+      } else {
+        g.fillCircle(x, 0, 3.5);
+      }
+      x += gap;
     });
   }
 
@@ -746,16 +977,6 @@ class BattleScene extends Phaser.Scene {
     root.setDepth(DEPTH.BOSS + 3);
     boss._statusBadgeRoot = root;
     boss._statusBadgeG = this.add.graphics();
-    // A hidden text instance used for quick measurements (we draw visible text via per-badge texts).
-    boss._statusBadgeMeasureText = this.add.text(0, 0, "", {
-      fontFamily: "Arial",
-      fontSize: "13px",
-      color: "#ffffff",
-      stroke: "#000000",
-      strokeThickness: 3
-    });
-    boss._statusBadgeMeasureText.setOrigin(0.5, 0.5);
-    boss._statusBadgeMeasureText.setVisible(false);
     root.add([boss._statusBadgeG]);
     return root;
   }
@@ -765,11 +986,20 @@ class BattleScene extends Phaser.Scene {
     if (!root) return;
 
     const g = boss._statusBadgeG;
-    const text = boss._statusBadgeMeasureText;
-    if (!g || !text) return;
+    if (!g) return;
 
     g.clear();
     if (!boss.active) return;
+
+    // Clean up legacy text badges if they exist from older versions.
+    if (boss._statusBadgeTexts?.length) {
+      boss._statusBadgeTexts.forEach((t) => { try { t.destroy(); } catch (_) {} });
+      boss._statusBadgeTexts = [];
+    }
+    if (boss._statusBadgeMeasureText) {
+      try { boss._statusBadgeMeasureText.destroy(); } catch (_) {}
+      boss._statusBadgeMeasureText = null;
+    }
 
     // Active vulnerability entries (mult + expiresAt). Render multiple badges at once (one per id).
     const listRaw = (boss.vulnerabilityEffects || []).filter((e) => (
@@ -805,71 +1035,38 @@ class BattleScene extends Phaser.Scene {
     const by = boss.y - 66 + Math.sin(now * 0.006) * 1.5;
     root.setPosition(bx, by);
 
-    // Measure each badge label with the shared text object, then draw all in one row.
-    const padX = 10;
-    const padY = 6;
-    const badgeGap = 10;
-    const badges = list.slice(0, 4).map((e) => {
-      const pct = Math.round((e.mult - 1) * 100);
-      const secs = Math.max(0, (e.expiresAt - now) / 1000);
-      const timeStr = secs >= 10 ? `${Math.ceil(secs)}s` : `${secs.toFixed(1)}s`;
-      const lbl = `${(e.label || "VULN")} +${pct}% · ${timeStr}`;
-      text.setText(lbl);
-      const w = text.width + padX * 2 + 18;
-      const h = Math.max(22, text.height + padY * 2);
-      return {
-        e,
-        lbl,
-        w: Math.min(330, w),
-        h
-      };
-    });
-    const totalW = badges.reduce((sum, b) => sum + b.w, 0) + Math.max(0, badges.length - 1) * badgeGap;
+    // Icon-only statuses above head (no name/timer). Blink when < 1s remaining.
+    const icons = list.slice(0, 8);
+    const gap = 18;
+    const totalW = icons.length * gap - gap;
     let x = -totalW / 2;
-    const pulse = 0.78 + 0.22 * Math.sin(now * 0.012);
-    const bg = 0x000000;
-    badges.forEach((b) => {
-      const intense = b.e.mult >= 1.2;
-      const baseCol = Number.isFinite(b.e.color) ? b.e.color : 0xffffff;
-      const frame = intense ? 0xff6666 : baseCol;
-      const icon = intense ? 0xff4444 : baseCol;
-      g.fillStyle(bg, 0.52);
-      g.lineStyle(2, frame, 0.86);
-      g.fillRoundedRect(x, -b.h / 2, b.w, b.h, 8);
-      g.strokeRoundedRect(x, -b.h / 2, b.w, b.h, 8);
-      g.fillStyle(icon, 0.95 * pulse);
-      g.fillCircle(x + 14, 0, 5);
-      g.lineStyle(2, icon, 0.65 * pulse);
-      g.strokeCircle(x + 14, 0, 8);
-      x += b.w + badgeGap;
-    });
+    icons.forEach((e) => {
+      const col = Number.isFinite(e.color) ? e.color : 0xffffff;
+      const leftMs = (e.expiresAt || 0) - now;
+      const blink = leftMs > 0 && leftMs <= 1000;
+      const blinkA = blink ? (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(now * 0.032))) : 1;
+      const a = 0.92 * blinkA;
+      const intense = e.mult >= 1.2;
+      const frame = intense ? 0xff6666 : col;
+      const fill = intense ? 0xff4444 : col;
 
-    // Draw the text for all badges (centered on each badge).
-    // We re-position the single text object and use it as a renderer by drawing multiple times via graphics text isn't possible,
-    // so we spawn lightweight per-badge texts and reuse them across frames.
-    if (!boss._statusBadgeTexts) boss._statusBadgeTexts = [];
-    const arr = boss._statusBadgeTexts;
-    while (arr.length < badges.length) {
-      const t = this.add.text(0, 0, "", {
-        fontFamily: "Arial",
-        fontSize: "13px",
-        color: "#ffffff",
-        stroke: "#000000",
-        strokeThickness: 3
-      });
-      t.setOrigin(0.5, 0.5);
-      root.add(t);
-      arr.push(t);
-    }
-    for (let i = 0; i < arr.length; i += 1) {
-      arr[i].setVisible(i < badges.length);
-    }
-    x = -totalW / 2;
-    badges.forEach((b, idx) => {
-      const t = arr[idx];
-      t.setText(b.lbl);
-      t.setPosition(x + b.w / 2 + 6, 0);
-      x += b.w + badgeGap;
+      // Symbol per status id.
+      const id = typeof e.id === "string" ? e.id : "vuln";
+      g.lineStyle(2, frame, 0.95 * a);
+      g.fillStyle(0x000000, 0.25 * a);
+      g.fillCircle(x, 0, 7);
+      g.strokeCircle(x, 0, 7);
+      g.fillStyle(fill, 0.85 * a);
+      if (id === "vanguardPierced") {
+        g.fillTriangle(x, -5, x - 5, 5, x + 5, 5);
+      } else if (id === "soulcallerSpiritHex") {
+        g.fillRect(x - 4, -4, 8, 8);
+        g.lineStyle(1.5, 0xffffff, 0.55 * a);
+        g.strokeRect(x - 4, -4, 8, 8);
+      } else {
+        g.fillCircle(x, 0, 3.5);
+      }
+      x += gap;
     });
   }
 
@@ -1699,6 +1896,7 @@ class BattleScene extends Phaser.Scene {
   }
 
   spawnPlayerProjectile(x, y, direction, damage, options = {}) {
+    if (this._netAuthJoiner) return null;
     let texKey = options.textureKey && this.textures.exists(options.textureKey) ? options.textureKey : "projectile_player";
     if (options.style === "soulWispBolt") {
       texKey = this.textures.exists("proj_soulcaller_wisp") ? "proj_soulcaller_wisp" : texKey;
@@ -1833,9 +2031,33 @@ class BattleScene extends Phaser.Scene {
         texKey
       );
     }
+    if (this._netAuthHost && this.net?.dc?.readyState === "open") {
+      const id = `pp_${++this._netObjSeq}`;
+      projectile._netId = id;
+      this._netGhostById.set(id, projectile);
+      this.net.sendJson({
+        t: "evSpawn",
+        kind: "player",
+        id,
+        x: projectile.x,
+        y: projectile.y,
+        vx: projectile.body?.velocity?.x || 0,
+        vy: projectile.body?.velocity?.y || 0,
+        texKey,
+        tint: projectile.tintTopLeft,
+        alpha: projectile.alpha,
+        sx: projectile.scaleX,
+        sy: projectile.scaleY,
+        dmg: projectile.damage,
+        effectColor: projectile.effectColor,
+        visualStyle: projectile.visualStyle
+      });
+    }
+    return projectile;
   }
 
   spawnBossProjectile(x, y, direction, damage, options = {}) {
+    if (this._netAuthJoiner) return null;
     const texKey =
       options.textureKey && this.textures.exists(options.textureKey) ? options.textureKey : "projectile_boss";
     const spawnOff = Number.isFinite(options.spawnOffsetX) ? options.spawnOffsetX : 30;
@@ -4757,6 +4979,21 @@ class BattleScene extends Phaser.Scene {
   safeDeactivate(gameObject) {
     if (!gameObject || !gameObject.active) return;
     try {
+      // Authoritative net: host tells joiner when net-owned objects despawn.
+      if (this._netAuthHost && this.net?.dc?.readyState === "open" && gameObject._netId) {
+        try {
+          this.net.sendJson({ t: "evDespawn", id: gameObject._netId });
+        } catch {
+          /* ignore */
+        }
+        if (this._netGhostById?.has(gameObject._netId)) {
+          this._netGhostById.delete(gameObject._netId);
+        }
+      }
+      // Joiner: keep local registry clean for ghost objects.
+      if (this._netAuthJoiner && gameObject._netId && this._netGhostById?.has(gameObject._netId)) {
+        this._netGhostById.delete(gameObject._netId);
+      }
       if (gameObject.body) {
         gameObject.disableBody(true, true);
       } else {
@@ -4768,6 +5005,8 @@ class BattleScene extends Phaser.Scene {
   }
 
   resolveHitObjects(first, second, kind) {
+    // Authoritative net: joiner client should not resolve hits or apply damage locally.
+    if (this._netAuthJoiner) return null;
     let group = null;
     if (kind === "projectile_player") group = this.playerProjectiles;
     else if (kind === "projectile_boss") group = this.bossProjectiles;
@@ -6025,6 +6264,28 @@ class BattleScene extends Phaser.Scene {
         });
       }
     }
+    if (this._netAuthHost && this.net?.dc?.readyState === "open") {
+      const id = `bp_${++this._netObjSeq}`;
+      projectile._netId = id;
+      this._netGhostById.set(id, projectile);
+      this.net.sendJson({
+        t: "evSpawn",
+        kind: "boss",
+        id,
+        x: projectile.x,
+        y: projectile.y,
+        vx: projectile.body?.velocity?.x || 0,
+        vy: projectile.body?.velocity?.y || 0,
+        texKey,
+        tint: projectile.tintTopLeft,
+        alpha: projectile.alpha,
+        sx: projectile.scaleX,
+        sy: projectile.scaleY,
+        dmg: projectile.damage,
+        effectColor: projectile.effectColor
+      });
+    }
+    return projectile;
   }
 
   drawBossVulnerabilityIndicator() {
@@ -11839,12 +12100,6 @@ class BattleScene extends Phaser.Scene {
       "CONTROLS",
       ctrls,
       "",
-      "YOUR STATUS",
-      ...(this.buildPlayerStatusPauseLines(player, this.time.now)),
-      "",
-      "BOSS STATUS",
-      ...(this.buildBossStatusPauseLines(this.boss, this.time.now)),
-      "",
       `BASIC — ${def.basicAttack.name}`,
       def.basicAttack.description || "",
       `Damage ${def.basicAttack.damage} · Cooldown ${def.basicAttack.cooldownMs} ms`,
@@ -11917,6 +12172,7 @@ class BattleScene extends Phaser.Scene {
         "Return to the main menu?\n\nYour current battle will end without saving progress."
       );
     }
+    this.refreshBattlePauseStatusPanels();
     const showExit = this.battlePauseTab === "exit";
     if (this.battlePauseExitGroup) {
       this.battlePauseExitGroup.setVisible(showExit);
@@ -11948,11 +12204,31 @@ class BattleScene extends Phaser.Scene {
     dim.setInteractive();
     all.push(dim);
 
-    const panelW = 688;
-    const panelH = 452;
-    const panelCx = W * 0.5;
+    // 3-column layout: player status (left) + manual (center) + boss status (right).
+    const sideW = 256;
+    const gap = 18;
+    const panelW = 780;
+    const panelH = 520;
+    const groupCx = W * 0.5;
+    const panelCx = groupCx;
     const panelCy = H * 0.5 + 6;
     const panelTop = panelCy - panelH * 0.5;
+    const leftCx = groupCx - (panelW * 0.5 + gap + sideW * 0.5);
+    const rightCx = groupCx + (panelW * 0.5 + gap + sideW * 0.5);
+
+    const leftPanel = this.add
+      .rectangle(leftCx, panelCy, sideW, panelH, 0x0f1624, 0.97)
+      .setScrollFactor(0)
+      .setDepth(z + 1);
+    leftPanel.setStrokeStyle(2, 0x5e88c6, 0.75);
+    all.push(leftPanel);
+
+    const rightPanel = this.add
+      .rectangle(rightCx, panelCy, sideW, panelH, 0x0f1624, 0.97)
+      .setScrollFactor(0)
+      .setDepth(z + 1);
+    rightPanel.setStrokeStyle(2, 0x5e88c6, 0.75);
+    all.push(rightPanel);
 
     const panel = this.add
       .rectangle(panelCx, panelCy, panelW, panelH, 0x101828, 0.97)
@@ -11983,6 +12259,50 @@ class BattleScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(z + 2);
     all.push(sub);
+
+    const leftTitle = this.add
+      .text(leftCx, panelTop + 36, "PLAYER STATUS", {
+        fontSize: "12px",
+        color: "#d7e7ff",
+        fontStyle: "bold",
+        fontFamily: "Consolas, Monaco, 'Courier New', monospace"
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(z + 2);
+    const rightTitle = this.add
+      .text(rightCx, panelTop + 36, "BOSS STATUS", {
+        fontSize: "12px",
+        color: "#d7e7ff",
+        fontStyle: "bold",
+        fontFamily: "Consolas, Monaco, 'Courier New', monospace"
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(z + 2);
+    all.push(leftTitle, rightTitle);
+
+    this.battlePauseLeftPanel = { cx: leftCx, top: panelTop, w: sideW, h: panelH, z };
+    this.battlePauseRightPanel = { cx: rightCx, top: panelTop, w: sideW, h: panelH, z };
+    this.battlePauseStatusObjects = [];
+
+    // Hover tooltip for status icons.
+    const tip = this.add.container(0, 0).setScrollFactor(0).setDepth(z + 10);
+    const tipBg = this.add.rectangle(0, 0, 10, 10, 0x0a1220, 0.96);
+    tipBg.setStrokeStyle(2, 0x9ec8ff, 0.9);
+    const tipTx = this.add.text(0, 0, "", {
+      fontSize: "12px",
+      color: "#e8f2ff",
+      fontFamily: "Consolas, Monaco, 'Courier New', monospace",
+      lineSpacing: 4,
+      wordWrap: { width: 320, useAdvancedWrap: true }
+    }).setOrigin(0.5);
+    tip.add([tipBg, tipTx]);
+    tip.setVisible(false);
+    tip._bg = tipBg;
+    tip._tx = tipTx;
+    this.battlePauseTooltip = tip;
+    all.push(tip);
 
     const tabY = panelTop + 104;
     const tabW1 = 168;
@@ -12024,7 +12344,7 @@ class BattleScene extends Phaser.Scene {
         fontSize: "12px",
         color: "#d7e7ff",
         fontFamily: "Consolas, Monaco, 'Courier New', monospace",
-        wordWrap: { width: panelW - 56, useAdvancedWrap: true },
+        wordWrap: { width: panelW - 64, useAdvancedWrap: true },
         lineSpacing: 5
       })
       .setOrigin(0.5, 0)
@@ -12070,6 +12390,171 @@ class BattleScene extends Phaser.Scene {
     if (visible) {
       this.refreshBattlePauseContent();
     }
+    if (!visible) {
+      this.hideBattlePauseTooltip();
+      this.destroyBattlePauseStatusObjects();
+    }
+  }
+
+  hideBattlePauseTooltip() {
+    if (this.battlePauseTooltip?.setVisible) this.battlePauseTooltip.setVisible(false);
+  }
+
+  destroyBattlePauseStatusObjects() {
+    if (!this.battlePauseStatusObjects?.length) return;
+    this.battlePauseStatusObjects.forEach((o) => {
+      try {
+        if (o && typeof o.destroy === "function") o.destroy();
+      } catch (_) {}
+    });
+    this.battlePauseStatusObjects = [];
+  }
+
+  refreshBattlePauseStatusPanels() {
+    if (!this.battlePauseMenuOpen) return;
+    if (!this.battlePauseLeftPanel || !this.battlePauseRightPanel) return;
+    this.destroyBattlePauseStatusObjects();
+
+    const now = this.time.now;
+    const left = this.battlePauseLeftPanel;
+    const right = this.battlePauseRightPanel;
+    const z = left.z || 9200;
+    const icon = { size: 28, pad: 10, gap: 10 };
+
+    const mkTooltip = (title, body, x, y) => {
+      const tip = this.battlePauseTooltip;
+      if (!tip?._bg || !tip?._tx) return;
+      tip._tx.setText([title, "", body].filter(Boolean).join("\n"));
+      const w = Math.min(360, tip._tx.width + 22);
+      const h = Math.min(240, tip._tx.height + 18);
+      tip._bg.setSize(w, h);
+      tip.setPosition(x, y);
+      tip.setVisible(true);
+    };
+
+    const hideTip = () => this.hideBattlePauseTooltip();
+
+    const drawIconSymbol = (g, kind, cx, cy, col) => {
+      g.clear();
+      g.lineStyle(2, col, 0.95);
+      g.fillStyle(0x000000, 0.35);
+      g.fillRoundedRect(cx - 13, cy - 13, 26, 26, 6);
+      g.strokeRoundedRect(cx - 13, cy - 13, 26, 26, 6);
+      g.fillStyle(col, 0.9);
+      if (kind === "tri") g.fillTriangle(cx, cy - 7, cx - 7, cy + 6, cx + 7, cy + 6);
+      else if (kind === "sq") g.fillRect(cx - 6, cy - 6, 12, 12);
+      else g.fillCircle(cx, cy, 5);
+    };
+
+    const mkIcon = (cx, cy, col, symKind, title, detail) => {
+      const g = this.add.graphics().setScrollFactor(0).setDepth(z + 3);
+      drawIconSymbol(g, symKind, cx, cy, col);
+      const hit = this.add.rectangle(cx, cy, icon.size, icon.size, 0x000000, 0.001).setScrollFactor(0).setDepth(z + 4);
+      hit.setInteractive({ useHandCursor: true });
+      hit.on("pointerover", () => {
+        const px = this.input.activePointer.x + 10;
+        const py = this.input.activePointer.y - 10;
+        mkTooltip(title, detail, px, py);
+      });
+      hit.on("pointermove", () => {
+        if (!this.battlePauseTooltip?.visible) return;
+        this.battlePauseTooltip.setPosition(this.input.activePointer.x + 10, this.input.activePointer.y - 10);
+      });
+      hit.on("pointerout", hideTip);
+      this.battlePauseStatusObjects.push(g, hit);
+    };
+
+    const fmtTime = (expiresAt) => {
+      const secs = Math.max(0, (expiresAt - now) / 1000);
+      return secs >= 10 ? `${Math.ceil(secs)}s` : `${secs.toFixed(1)}s`;
+    };
+
+    // LEFT: players, separated by player.
+    const p1 = this.getBattlePlayerBySlot(1);
+    const p2 = this.getBattlePlayerBySlot(2);
+    const mkPlayerBlock = (label, p, topY) => {
+      const head = this.add.text(left.cx, topY, label, {
+        fontSize: "11px",
+        color: "#8fa8c8",
+        fontFamily: "Consolas, Monaco, 'Courier New', monospace"
+      }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(z + 2);
+      this.battlePauseStatusObjects.push(head);
+      const y = topY + 22;
+      const x0 = left.cx - left.w * 0.5 + icon.pad + icon.size * 0.5;
+      const maxPerRow = Math.max(1, Math.floor((left.w - icon.pad * 2) / (icon.size + icon.gap)));
+      const list = p ? this._getPlayerStatusEntries(p, now) : [];
+      if (!list.length) {
+        const none = this.add.text(left.cx, y + 6, "None", { fontSize: "11px", color: "#5f789a", fontFamily: "Consolas, Monaco, 'Courier New', monospace" })
+          .setOrigin(0.5, 0).setScrollFactor(0).setDepth(z + 2);
+        this.battlePauseStatusObjects.push(none);
+        return;
+      }
+      list.slice(0, 10).forEach((e, idx) => {
+        const row = Math.floor(idx / maxPerRow);
+        const col = idx % maxPerRow;
+        const cx = x0 + col * (icon.size + icon.gap);
+        const cy = y + row * (icon.size + 10);
+        const tag = e.tag || "";
+        const kind = tag.includes("vanguardRally") ? "tri" : tag.includes("soulcallerPossession") ? "sq" : "dot";
+        const color = this._formatPlayerStatusBadge(e, now).color || 0xffffff;
+        const name = tag.includes("vanguardRally") ? "Rally" :
+          tag.includes("soulcallerPossession") ? "Possession" :
+          tag.includes("guardianFortitude") ? "Fortitude" :
+          tag.includes("guardianAegisParry") ? "Aegis" :
+          tag.includes("guardianTaunt") ? "Taunt" : "Buff";
+        const pct = e.kind === "dr" ? Math.round((1 - e.mult) * 100) : Math.round((e.mult - 1) * 100);
+        const stat = e.kind === "dr" ? `-${pct}% damage taken` : e.kind === "spd" ? `+${pct}% move speed` : `+${pct}% damage`;
+        const desc =
+          tag.includes("vanguardRally") ? "Damage buff granted by Vanguard Dash Strike." :
+          tag.includes("soulcallerPossession") ? "Soulcaller links to you: boosted damage and speed." :
+          tag.includes("guardianFortitude") ? "Guardian's cleave grants temporary damage reduction." :
+          tag.includes("guardianAegisParry") ? "Successful parry grants brief damage reduction." :
+          tag.includes("guardianTaunt") ? "Boss prioritizes Guardian." :
+          "Temporary buff.";
+        mkIcon(cx, cy, color, kind, `${name} (${fmtTime(e.expiresAt)})`, `${stat}\n\n${desc}`);
+      });
+    };
+
+    mkPlayerBlock("P1", p1, left.top + 62);
+    mkPlayerBlock("P2", p2, left.top + left.h * 0.5 + 18);
+
+    // RIGHT: boss statuses (vulnerability sources)
+    const boss = this.boss?.active ? this.boss : null;
+    const raw = boss ? (boss.vulnerabilityEffects || []).filter((e) => e && e.expiresAt > now && e.mult > 1) : [];
+    const byId = new Map();
+    raw.forEach((e) => {
+      const id = e.id || "vuln";
+      const cur = byId.get(id);
+      if (!cur || e.mult > cur.mult || (e.mult === cur.mult && e.expiresAt > cur.expiresAt)) byId.set(id, e);
+    });
+    const list = [...byId.values()].sort((a, b) => (b.mult - a.mult) || (b.expiresAt - a.expiresAt));
+    const bossTop = right.top + 62;
+    const bossName = this.add.text(right.cx, bossTop, boss?.definition?.name || "Boss", {
+      fontSize: "11px",
+      color: "#8fa8c8",
+      fontFamily: "Consolas, Monaco, 'Courier New', monospace"
+    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(z + 2);
+    this.battlePauseStatusObjects.push(bossName);
+    const y0 = bossTop + 22;
+    const x0 = right.cx - right.w * 0.5 + icon.pad + icon.size * 0.5;
+    const maxPerRow = Math.max(1, Math.floor((right.w - icon.pad * 2) / (icon.size + icon.gap)));
+    if (!list.length) {
+      const none = this.add.text(right.cx, y0 + 6, "None", { fontSize: "11px", color: "#5f789a", fontFamily: "Consolas, Monaco, 'Courier New', monospace" })
+        .setOrigin(0.5, 0).setScrollFactor(0).setDepth(z + 2);
+      this.battlePauseStatusObjects.push(none);
+      return;
+    }
+    list.slice(0, 10).forEach((e, idx) => {
+      const row = Math.floor(idx / maxPerRow);
+      const col = idx % maxPerRow;
+      const cx = x0 + col * (icon.size + icon.gap);
+      const cy = y0 + row * (icon.size + 10);
+      const sym = e.id === "vanguardPierced" ? "tri" : e.id === "soulcallerSpiritHex" ? "sq" : "dot";
+      const pct = Math.round((e.mult - 1) * 100);
+      const nm = e.label || "Vulnerability";
+      const desc = e.desc || "Boss takes increased damage from all sources.";
+      mkIcon(cx, cy, e.color || 0xffffff, sym, `${nm} (${fmtTime(e.expiresAt)})`, `+${pct}% damage taken\n\n${desc}`);
+    });
   }
 
   openBattlePauseMenu() {

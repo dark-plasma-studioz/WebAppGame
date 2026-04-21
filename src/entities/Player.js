@@ -69,10 +69,19 @@ class Player extends Phaser.Physics.Arcade.Sprite {
 
     const moveLeft = this.controls.left.isDown;
     const moveRight = this.controls.right.isDown;
-    const jumpPressed = Phaser.Input.Keyboard.JustDown(this.controls.jump);
-    const attackPressed = Phaser.Input.Keyboard.JustDown(this.controls.attack);
-    const abilityPressed = Phaser.Input.Keyboard.JustDown(this.controls.ability);
-    const utilityPressed = this.controls.utility && Phaser.Input.Keyboard.JustDown(this.controls.utility);
+    const keyJustDown = (k) => {
+      if (!k) return false;
+      if (k._virtual) {
+        const jd = !!k._virtualJustDown;
+        k._virtualJustDown = false;
+        return jd;
+      }
+      return Phaser.Input.Keyboard.JustDown(k);
+    };
+    const jumpPressed = keyJustDown(this.controls.jump);
+    const attackPressed = keyJustDown(this.controls.attack);
+    const abilityPressed = keyJustDown(this.controls.ability);
+    const utilityPressed = this.controls.utility && keyJustDown(this.controls.utility);
 
     const isMovementLocked = time < this.movementLockUntil;
     const shroudRoot = this.soulShroudActive;
@@ -348,7 +357,12 @@ class Player extends Phaser.Physics.Arcade.Sprite {
           if (boss && victim === boss && typeof boss.applyVulnerability === "function") {
             const pMult = this.getAttackTuningValue(basicAttack, "pierceMult", 1.15);
             const pMs = this.getAttackTuningValue(basicAttack, "pierceDurationMs", 2500);
-            boss.applyVulnerability(pMult, pMs, { id: "vanguardPierced", label: "PIERCED", color: 0x89c4ff });
+            boss.applyVulnerability(pMult, pMs, {
+              id: "vanguardPierced",
+              label: "PIERCED",
+              color: 0x89c4ff,
+              desc: "Boss takes increased damage from all sources."
+            });
             if (typeof this.scene.spawnVanguardPierceMark === "function") {
               this.scene.spawnVanguardPierceMark(boss);
             }
