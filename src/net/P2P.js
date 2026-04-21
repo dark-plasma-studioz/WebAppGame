@@ -65,6 +65,24 @@
   }
 
   /**
+   * RTCSessionDescription is not a plain object — JSON.stringify(localDescription) is often "{}".
+   * Always copy a real { type, sdp } JSON string for paste between peers.
+   * @param {RTCSessionDescription | { type?: string; sdp?: string } | null} desc
+   */
+  function serializeRtcSessionDescription(desc) {
+    if (!desc) return "";
+    const type = desc.type;
+    const sdp = desc.sdp;
+    if (typeof type !== "string" || typeof sdp !== "string") return "";
+    if (!type.trim() || !sdp.trim()) return "";
+    try {
+      return JSON.stringify({ type, sdp });
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * @param {string} raw
    * @param {"offer" | "answer" | null} kindHint when paste is raw SDP only (not JSON)
    */
@@ -460,7 +478,14 @@
       const offer = await p.createOffer();
       await p.setLocalDescription(offer);
       await waitForIceGatheringComplete(p, 4500);
-      hostOfferOut.value = JSON.stringify(p.localDescription);
+      const offerBlob = serializeRtcSessionDescription(p.localDescription);
+      hostOfferOut.value = offerBlob;
+      if (!offerBlob) {
+        setStatus("Could not serialize offer — try another browser or reload", "HOST");
+        btnHostAccept.disabled = true;
+        btnCopyOffer.disabled = true;
+        return;
+      }
       btnHostAccept.disabled = false;
       btnCopyOffer.disabled = false;
       setStatus("Offer ready (send it)", "HOST");
@@ -500,7 +525,13 @@
         const answer = await p.createAnswer();
         await p.setLocalDescription(answer);
         await waitForIceGatheringComplete(p, 4500);
-        joinAnswerOut.value = JSON.stringify(p.localDescription);
+        const ansBlob = serializeRtcSessionDescription(p.localDescription);
+        joinAnswerOut.value = ansBlob;
+        if (!ansBlob) {
+          setStatus("Could not serialize answer — try another browser or reload", "JOIN");
+          btnCopyAnswer.disabled = true;
+          return;
+        }
         btnCopyAnswer.disabled = false;
         setStatus("Answer ready (send back)", "JOIN");
       } catch (e) {
