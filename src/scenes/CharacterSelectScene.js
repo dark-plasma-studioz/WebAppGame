@@ -38,6 +38,14 @@ class CharacterSelectScene extends Phaser.Scene {
     this.createHeader();
     this.createMatchStatusStrip();
     this.createPlayerPanels();
+    this.p2PanelBg
+      .setInteractive({ useHandCursor: true })
+      .on("pointerdown", () => {
+        if (this.netRole !== "join") return;
+        if (!this.selected.p2Joined || this.selected.p2Locked) return;
+        this.selected.p2Locked = true;
+        this.refreshUi();
+      });
 
     const cardW = 160;
     const cardH = 198;
@@ -157,32 +165,54 @@ class CharacterSelectScene extends Phaser.Scene {
     }
 
     // P2P lobby wiring (host decides match; joiner only picks P2 character).
-    this.net = window.NET_SESSION && window.NET_SESSION.kind === "webrtc" && window.NET_SESSION.dc?.readyState === "open"
-      ? window.NET_SESSION
-      : null;
-    this.netRole = this.net?.role || null; // "host" | "join"
-    this.netActive = !!this.netRole;
+    // Bind can race: scene may start a frame before the data channel is "open" — retry in update + delayed calls.
+    this.net = null;
+    this.netRole = null;
+    this.netActive = false;
+    this._netShutdownHooked = false;
     this._netLastSentP1 = null;
     this._netLastSentP1Locked = null;
     this._netLastSentP2 = null;
     this._netLastSentP2Locked = null;
+    this._syncNetSessionFromWindow();
+    this.time.delayedCall(0, () => {
+      this._syncNetSessionFromWindow();
+      this.refreshUi();
+    });
+    this.time.delayedCall(120, () => {
+      this._syncNetSessionFromWindow();
+      this.refreshUi();
+    });
 
-    if (this.netActive) {
-      // P2 always exists in P2P mode.
-      this.selected.p2Joined = true;
-      if (this.netRole === "join") {
-        // Joiner cannot control P1 or start the match.
-        this.selected.p1Locked = true;
-      }
-      this.net.onMessage = (raw) => this._onNetMessage(raw);
+    this.refreshUi();
+  }
+
+  /**
+   * Attach NET_SESSION when the WebRTC data channel becomes ready (may be after scene create).
+   */
+  _syncNetSessionFromWindow() {
+    if (this.netActive) return true;
+    const sess = window.NET_SESSION;
+    if (!sess || sess.kind !== "webrtc" || !sess.dc || sess.dc.readyState !== "open") return false;
+    const role = sess.role;
+    if (role !== "host" && role !== "join") return false;
+    this.net = sess;
+    this.netRole = role;
+    this.netActive = true;
+    this.selected.p2Joined = true;
+    if (this.netRole === "join") {
+      this.selected.p1Locked = true;
+    }
+    this.net.onMessage = (raw) => this._onNetMessage(raw);
+    if (!this._netShutdownHooked) {
+      this._netShutdownHooked = true;
       this.events.once("shutdown", () => {
         if (window.NET_SESSION && window.NET_SESSION.onMessage === this._onNetMessage) {
           window.NET_SESSION.onMessage = null;
         }
       });
     }
-
-    this.refreshUi();
+    return true;
   }
 
   _onNetMessage(raw) {
@@ -433,6 +463,8 @@ class CharacterSelectScene extends Phaser.Scene {
   }
 
   update() {
+    if (!this.netActive) this._syncNetSessionFromWindow();
+
     const p2pJoin = this.netActive && this.netRole === "join";
     const p2pHost = this.netActive && this.netRole === "host";
 
@@ -640,11 +672,15 @@ class CharacterSelectScene extends Phaser.Scene {
     }
     const c = window.CHARACTERS[this.selected.p2Index];
     const st = this.selected.p2Locked ? "LOCKED" : "SELECT";
+    const p2pJoin = this.netActive && this.netRole === "join";
+    const readyLine = p2pJoin
+      ? `Select: ←/→ move · ${atk} lock (or click this panel) · Enter leave`
+      : `Select: ←/→ move · ${atk} lock · Enter leave`;
     return [
       `${c.name}  ·  ${st}  ·  HP ${c.maxHealth}`,
       c.blurb || "",
       "",
-      `Select: ←/→ move · ${atk} lock · Enter leave`,
+      readyLine,
       `Battle: ↑ jump · ${atk} atk · ${ab} ability · ${ut} util`,
       "",
       CharacterSelectScene.formatAttackBlock(c, 42)
@@ -682,10 +718,14 @@ class CharacterSelectScene extends Phaser.Scene {
     const allReady = this.canStartBattle();
     const p1Atk = CharacterSelectScene.getPlayerKeyLabel(1, "attack");
     const p2Atk = CharacterSelectScene.getPlayerKeyLabel(2, "attack");
+    const joinHint =
+      this.netActive && this.netRole === "join"
+        ? " (P2: lock with attack key or click the P2 panel)"
+        : "";
     this.matchStatusText.setText(
       allReady
-        ? "ARMED — All locked. Press SPACE or click the banner to deploy."
-        : `STANDBY — Lock each active player (${p1Atk} for P1, ${p2Atk} for P2). Solo runs need P1 only.`
+        ? "ARMED — All locked. Host: SPACE or banner to deploy."
+        : `STANDBY — Lock each active player (${p1Atk} for P1, ${p2Atk} for P2).${joinHint} Solo: P1 only.`
     );
     this.matchStatusText.setColor(allReady ? "#b8ffd2" : "#d7e7ff");
     this.matchStatusBg.setStrokeStyle(2, allReady ? 0x66f09e : 0x4f74a8, 0.95);

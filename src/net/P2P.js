@@ -400,12 +400,13 @@
     };
 
     const persistSession = () => {
+      const prev = window.NET_SESSION;
       window.NET_SESSION = {
         kind: "webrtc",
         role,
         pc,
         dc,
-        onMessage: null,
+        onMessage: typeof prev?.onMessage === "function" ? prev.onMessage : null,
         _sendSeq: 0,
         _recvSeq: 0,
         send: (type, payload = {}) => {
