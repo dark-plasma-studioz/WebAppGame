@@ -15,22 +15,85 @@
     }
   }
 
-  function normalizeSessionDescriptionBlob(raw) {
-    let s = String(raw || "").trim();
+  /** Remove BOM, zero-width chars, and Unicode quotes that break JSON.parse after paste. */
+  function stripPasteNoise(s) {
+    return String(s || "")
+      .replace(/^\uFEFF/, "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/[\u201C\u201D\u275D\u275E]/g, '"');
+  }
+
+  /** If the user copied only the JSON object from a larger message, isolate `{...}` (JSON strings use `"` only). */
+  function extractBalancedJsonObject(s) {
+    const start = s.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') {
+        inStr = true;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) return s.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  /** Pasted plain SDP (no JSON) — WebRTC offers/answers always start a session with v=0. */
+  function looksLikeRawSdp(s) {
+    const t = String(s || "").trim();
+    return /^v=0(\s|$|\r|\n)/m.test(t);
+  }
+
+  function normalizeSdpNewlines(sdp) {
+    return String(sdp || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\n/g, "\r\n");
+  }
+
+  /**
+   * @param {string} raw
+   * @param {"offer" | "answer" | null} kindHint when paste is raw SDP only (not JSON)
+   */
+  function normalizeSessionDescriptionBlob(raw, kindHint = null) {
+    let s = stripPasteNoise(String(raw || "")).trim();
     if (!s) return null;
 
-    // Strip common Discord/Markdown wrappers.
-    // ```json\n{...}\n```
+    // Strip common Discord/Markdown wrappers (allow language tag on same or next line).
     if (s.startsWith("```")) {
-      s = s.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/m, "").trim();
+      s = s.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```[\s\u200B]*$/m, "").trim();
     }
     // Leading labels like "Offer:" or "Answer:"
     s = s.replace(/^(offer|answer)\s*:\s*/i, "").trim();
 
-    // First parse attempt.
+    // First parse attempt on full string.
     let obj = safeJsonParse(s);
 
-    // Discord sometimes adds quotes around the whole JSON, so parsing yields a string.
+    // If failed, try extracting a single JSON object (ignores trailing chat text).
+    if (!obj) {
+      const balanced = extractBalancedJsonObject(s);
+      if (balanced && balanced !== s) obj = safeJsonParse(balanced);
+    }
+    if (!obj) {
+      const start = s.indexOf("{");
+      const end = s.lastIndexOf("}");
+      if (start >= 0 && end > start) obj = safeJsonParse(s.slice(start, end + 1));
+    }
+
+    // Discord / some apps wrap JSON as a JSON string.
     if (typeof obj === "string") {
       const obj2 = safeJsonParse(obj);
       if (obj2) obj = obj2;
@@ -41,11 +104,20 @@
       if (obj.payload && typeof obj.payload === "object") obj = obj.payload;
       if (obj.desc && typeof obj.desc === "object") obj = obj.desc;
       if (obj.data && typeof obj.data === "object") obj = obj.data;
+      if (obj.sdp && typeof obj.sdp === "object" && obj.sdp.type && obj.sdp.sdp) obj = obj.sdp;
+    }
+
+    if ((!obj || typeof obj !== "object") && looksLikeRawSdp(s)) {
+      const t = kindHint === "answer" ? "answer" : "offer";
+      return { type: t, sdp: normalizeSdpNewlines(s) };
     }
 
     if (!obj || typeof obj !== "object") return null;
-    if (!obj.type || !obj.sdp) return null;
-    return obj;
+    const t = obj.type;
+    const sdp = obj.sdp;
+    if (typeof t !== "string" || typeof sdp !== "string") return null;
+    if (!t.trim() || !sdp.trim()) return null;
+    return { type: t, sdp: normalizeSdpNewlines(sdp) };
   }
 
   function createEl(tag, attrs = {}, children = []) {
@@ -395,9 +467,9 @@
     });
 
     btnHostAccept.addEventListener("click", async () => {
-      const desc = normalizeSessionDescriptionBlob(hostAnswerIn.value);
+      const desc = normalizeSessionDescriptionBlob(hostAnswerIn.value, "answer");
       if (!desc || !desc.type || !desc.sdp) {
-        setStatus("Answer invalid JSON (paste full blob)", "HOST");
+        setStatus("Could not read answer (paste JSON or raw SDP from joiner)", "HOST");
         return;
       }
       try {
@@ -411,11 +483,14 @@
     });
 
     btnJoinMake.addEventListener("click", async () => {
+      // Must snapshot before resetState — reset clears the join offer textarea.
+      const offerRaw = joinOfferIn.value;
       resetState();
+      joinOfferIn.value = offerRaw;
       role = "join";
-      const offer = normalizeSessionDescriptionBlob(joinOfferIn.value);
+      const offer = normalizeSessionDescriptionBlob(offerRaw, "offer");
       if (!offer || !offer.type || !offer.sdp) {
-        setStatus("Offer invalid JSON (paste full blob)", "JOIN");
+        setStatus("Could not read offer (paste JSON or raw SDP from host)", "JOIN");
         return;
       }
       try {
