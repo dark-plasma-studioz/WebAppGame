@@ -134,6 +134,7 @@ class BattleScene extends Phaser.Scene {
     this._netAuthHost = this._netAuthEnabled && this.net.role === "host";
     this._netObjSeq = 0;
     this._netGhostById = new Map();
+    this._netMinionDots = null;
 
     this.applyDifficultySceneTuning();
 
@@ -598,6 +599,9 @@ class BattleScene extends Phaser.Scene {
         if (Number.isFinite(snap.twin.stunnedUntil)) this.bossTwin.stunnedUntil = snap.twin.stunnedUntil;
         if (Array.isArray(snap.twin.vuln)) this.bossTwin.vulnerabilityEffects = snap.twin.vuln;
       }
+      if (snap.min && typeof snap.min === "object") {
+        this._applyMinionGhostSnapshot(snap.min);
+      }
       return;
     }
 
@@ -619,6 +623,11 @@ class BattleScene extends Phaser.Scene {
       if (Number.isFinite(msg.alpha)) p.setAlpha(msg.alpha);
       const tint = Number.isFinite(msg.tint) ? msg.tint : Number.isFinite(msg.effectColor) ? msg.effectColor : null;
       if (tint != null && p.setTint) p.setTint(tint);
+      if (texKey === "proj_ranger" && kind === "player") p.setFlipX(vx < 0);
+      if ((texKey === "proj_summoner" || texKey === "proj_summoner_charged") && kind === "player") p.setFlipX(vx < 0);
+      if ((texKey === "proj_soulcaller_wisp" || texKey === "proj_soulcaller_turret") && kind === "player") {
+        p.setFlipX(vx < 0);
+      }
       p.damage = msg.dmg;
       p.effectColor = msg.effectColor;
       p.visualStyle = msg.visualStyle || (kind === "boss" ? "boss" : "default");
@@ -664,7 +673,10 @@ class BattleScene extends Phaser.Scene {
     if (this._netAuthEnabled && window.NET_SESSION?.dc?.readyState === "open") {
       this._netTick(time);
       if (this._netAuthJoiner) {
-        // Minimal render-only update loop.
+        // Keep projectile / hazard ghosts moving and culled; host remains authoritative for spawns.
+        this.cleanupProjectiles(this.playerProjectiles);
+        this.cleanupProjectiles(this.bossProjectiles);
+        this.cleanupProjectiles(this.hazards);
         this.drawBossStatusBadges(time);
         this.drawPlayerStatusBadges(time);
         this.renderTrueHitboxOverlay();
@@ -792,11 +804,70 @@ class BattleScene extends Phaser.Scene {
             p1: packPlayer(p1),
             p2: packPlayer(p2),
             boss: packBoss(this.boss),
-            twin: packBoss(this.bossTwin)
+            twin: packBoss(this.bossTwin),
+            min: this._netPackMinionGhostState()
           }
         });
       }
     }
+  }
+
+  /** Host-only: positions for joiner-side decorative proxies (wisps, turrets, summons). */
+  _netPackMinionGhostState() {
+    const pt = (sprite) =>
+      sprite && sprite.active ? { x: sprite.x, y: sprite.y } : null;
+    const mapList = (arr, getSprite) =>
+      (arr || [])
+        .map((e) => pt(getSprite(e)))
+        .filter((o) => o && Number.isFinite(o.x) && Number.isFinite(o.y));
+    const wisps = mapList(this.soulcallerWisps, (e) => e.container);
+    const turrets = mapList(this.soulcallerTurrets, (e) => e.sprite);
+    const decoys = mapList(this.soulcallerDecoys, (e) => e.sprite);
+    const gw = this.graveWardenSummons;
+    const graves = gw ? mapList(gw.graves, (e) => e.sprite) : [];
+    const phantoms = gw ? mapList(gw.phantoms, (e) => e.sprite) : [];
+    const brutes = gw ? mapList(gw.brutes, (e) => e.sprite) : [];
+    return { w: wisps, t: turrets, d: decoys, gv: graves, ph: phantoms, br: brutes };
+  }
+
+  /** Joiner: simple orb proxies so P2 sees summons / pets moving. */
+  _applyMinionGhostSnapshot(min) {
+    if (!this._netAuthJoiner || !min || typeof min !== "object") return;
+    if (!this._netMinionDots) this._netMinionDots = { root: null, layers: {} };
+    if (!this._netMinionDots.root) {
+      this._netMinionDots.root = this.add.container(0, 0).setDepth(DEPTH.PLAYER_FX + 3);
+    }
+    const root = this._netMinionDots.root;
+    const syncLayer = (key, arr, color, r) => {
+      if (!Array.isArray(arr)) arr = [];
+      if (!this._netMinionDots.layers[key]) this._netMinionDots.layers[key] = [];
+      const dots = this._netMinionDots.layers[key];
+      while (dots.length < arr.length) {
+        const c = this.add.circle(0, 0, r, color, 0.55);
+        c.setStrokeStyle(1.2, color, 0.9);
+        root.add(c);
+        dots.push(c);
+      }
+      while (dots.length > arr.length) {
+        const d = dots.pop();
+        try {
+          d.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+      arr.forEach((pt, i) => {
+        const x = Number(pt?.x);
+        const y = Number(pt?.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) dots[i].setPosition(x, y);
+      });
+    };
+    syncLayer("w", min.w, 0x58d8e8, 11);
+    syncLayer("t", min.t, 0x7ae8ff, 14);
+    syncLayer("d", min.d, 0x88ccff, 12);
+    syncLayer("gv", min.gv, 0x6a8a6a, 10);
+    syncLayer("ph", min.ph, 0xa878d8, 11);
+    syncLayer("br", min.br, 0x8a7a60, 16);
   }
 
   drawBossStatusBadges(time) {
@@ -2035,6 +2106,11 @@ class BattleScene extends Phaser.Scene {
       const id = `pp_${++this._netObjSeq}`;
       projectile._netId = id;
       this._netGhostById.set(id, projectile);
+      const tintVal = Number.isFinite(projectile.tintTopLeft)
+        ? projectile.tintTopLeft
+        : Number.isFinite(projectile.effectColor)
+          ? projectile.effectColor
+          : 0xfff7a8;
       this.net.sendJson({
         t: "evSpawn",
         kind: "player",
@@ -2044,7 +2120,7 @@ class BattleScene extends Phaser.Scene {
         vx: projectile.body?.velocity?.x || 0,
         vy: projectile.body?.velocity?.y || 0,
         texKey,
-        tint: projectile.tintTopLeft,
+        tint: tintVal,
         alpha: projectile.alpha,
         sx: projectile.scaleX,
         sy: projectile.scaleY,
@@ -2171,6 +2247,34 @@ class BattleScene extends Phaser.Scene {
         projectile.body.setCircle(br);
       }
     }
+    if (this._netAuthHost && this.net?.dc?.readyState === "open") {
+      const id = `bp_${++this._netObjSeq}`;
+      projectile._netId = id;
+      this._netGhostById.set(id, projectile);
+      const tintVal = Number.isFinite(projectile.tintTopLeft)
+        ? projectile.tintTopLeft
+        : Number.isFinite(projectile.effectColor)
+          ? projectile.effectColor
+          : 0xffffff;
+      this.net.sendJson({
+        t: "evSpawn",
+        kind: "boss",
+        id,
+        x: projectile.x,
+        y: projectile.y,
+        vx: projectile.body?.velocity?.x || 0,
+        vy: projectile.body?.velocity?.y || 0,
+        texKey,
+        tint: tintVal,
+        alpha: projectile.alpha,
+        sx: projectile.scaleX,
+        sy: projectile.scaleY,
+        dmg: projectile.damage,
+        effectColor: projectile.effectColor,
+        visualStyle: "boss"
+      });
+    }
+    return projectile;
   }
 
   spawnHollowBloomOrb(leader, twin, target) {

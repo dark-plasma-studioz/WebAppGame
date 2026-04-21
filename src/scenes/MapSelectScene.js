@@ -34,13 +34,25 @@ class MapSelectScene extends Phaser.Scene {
       : null;
     this.netRole = this.net?.role || null;
     if (this.netRole === "join") {
-      this.add.text(480, 500, "P2P JOINER: waiting for host arena + deploy…", {
+      this.add.text(480, 500, "P2P — mirroring host arena selection (read-only)", {
         fontSize: "11px",
-        color: "#ffd4a4",
+        color: "#a8e8c8",
         fontStyle: "bold",
         fontFamily: "Consolas, Monaco, 'Courier New', monospace"
       }).setOrigin(0.5);
       this.net.onMessage = (raw) => this._onNetMessage(raw);
+    }
+
+    this.time.delayedCall(80, () => this._broadcastMapStateIfHost());
+  }
+
+  _broadcastMapStateIfHost() {
+    const net = window.NET_SESSION;
+    if (!net || net.kind !== "webrtc" || net.role !== "host" || net.dc?.readyState !== "open") return;
+    try {
+      net.sendJson({ t: "mapSync", selectedIndex: this.selectedIndex });
+    } catch {
+      /* ignore */
     }
   }
 
@@ -49,6 +61,15 @@ class MapSelectScene extends Phaser.Scene {
     let msg = null;
     try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return; }
     if (!msg || typeof msg !== "object") return;
+    if (msg.t === "mapSync" && Number.isFinite(msg.selectedIndex) && this.arenas?.length) {
+      const max = this.arenas.length - 1;
+      const si = Phaser.Math.Clamp(Math.floor(msg.selectedIndex), 0, max);
+      if (si !== this.selectedIndex) {
+        this.selectedIndex = si;
+        this.refreshPreview(true);
+      }
+      return;
+    }
     if (msg.t === "goBattle" && msg.payload && typeof msg.payload === "object") {
       this.scene.start("BattleScene", msg.payload);
     }
@@ -470,7 +491,10 @@ class MapSelectScene extends Phaser.Scene {
           alpha: 1,
           duration: 140,
           ease: "Quad.easeOut",
-          onComplete: () => { this._tweenBusy = false; }
+          onComplete: () => {
+            this._tweenBusy = false;
+            this._broadcastMapStateIfHost();
+          }
         });
       }
     });

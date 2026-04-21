@@ -154,6 +154,28 @@
     return el;
   }
 
+  /**
+   * While the HTML overlay is open, block pointer events from reaching the Phaser canvas
+   * and disable Phaser input (fixes click-through to game / main menu buttons underneath).
+   */
+  function setPhaserBlockedByOverlay(blocked) {
+    const app = document.getElementById("app");
+    if (app && app.style) {
+      app.style.pointerEvents = blocked ? "none" : "";
+    }
+    const g = window.__phaserGame;
+    if (!g) return;
+    if (g.canvas && g.canvas.style) {
+      g.canvas.style.pointerEvents = blocked ? "none" : "";
+    }
+    if (g.input) {
+      g.input.enabled = !blocked;
+    }
+    if (g.input && g.input.keyboard) {
+      g.input.keyboard.enabled = !blocked;
+    }
+  }
+
   function ensureStyles() {
     if (document.getElementById("p2p-overlay-styles")) return;
     const css = `
@@ -164,8 +186,11 @@
         align-items: center;
         justify-content: center;
         background: rgba(0,0,0,0.55);
-        z-index: 999999;
+        z-index: 2147483000;
         padding: 16px;
+        pointer-events: auto;
+        touch-action: none;
+        isolation: isolate;
       }
       .p2p-overlay.is-open { display: flex; }
       .p2p-panel {
@@ -499,14 +524,31 @@
       }
     };
 
+    const setOverlayOpen = (open) => {
+      overlay.classList.toggle("is-open", !!open);
+      setPhaserBlockedByOverlay(!!open);
+    };
+
+    // Stop events from reaching the canvas / Phaser (capture phase).
+    ["pointerdown", "pointerup", "click", "wheel", "touchstart", "touchmove", "touchend"].forEach((type) => {
+      overlay.addEventListener(
+        type,
+        (e) => {
+          if (!overlay.classList.contains("is-open")) return;
+          e.stopPropagation();
+        },
+        true
+      );
+    });
+
     btnClose.addEventListener("click", () => {
-      overlay.classList.remove("is-open");
+      setOverlayOpen(false);
     });
     overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) overlay.classList.remove("is-open");
+      if (e.target === overlay) setOverlayOpen(false);
     });
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && overlay.classList.contains("is-open")) overlay.classList.remove("is-open");
+      if (e.key === "Escape" && overlay.classList.contains("is-open")) setOverlayOpen(false);
     });
 
     btnContinueLobby.addEventListener("click", () => {
@@ -518,11 +560,11 @@
       }
       if (sc.isActive("MainMenuScene")) {
         sc.start("CharacterSelectScene");
-        overlay.classList.remove("is-open");
+        setOverlayOpen(false);
         return;
       }
       if (sc.isActive("CharacterSelectScene")) {
-        overlay.classList.remove("is-open");
+        setOverlayOpen(false);
         return;
       }
       window.alert(
@@ -620,7 +662,7 @@
     return {
       overlay,
       open: () => {
-        overlay.classList.add("is-open");
+        setOverlayOpen(true);
         const sess = window.NET_SESSION;
         if (sess && sess.dc && sess.dc.readyState === "open") {
           setStatus("Connected", sess.role === "host" ? "Host" : sess.role === "join" ? "Join" : "");

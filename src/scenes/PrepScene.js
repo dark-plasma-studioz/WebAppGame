@@ -53,13 +53,30 @@ class PrepScene extends Phaser.Scene {
       : null;
     this.netRole = this.net?.role || null;
     if (this.netRole === "join") {
-      this.add.text(480, 486, "P2P JOINER: waiting for host…", {
-        fontSize: "12px",
-        color: "#ffd4a4",
+      this.add.text(480, 486, "P2P — mirroring host difficulty & boss target (read-only)", {
+        fontSize: "11px",
+        color: "#a8e8c8",
         fontStyle: "bold",
         fontFamily: "Consolas, Monaco, 'Courier New', monospace"
       }).setOrigin(0.5);
       this.net.onMessage = (raw) => this._onNetMessage(raw);
+    }
+
+    this.time.delayedCall(80, () => this._broadcastPrepStateIfHost());
+  }
+
+  _broadcastPrepStateIfHost() {
+    const net = window.NET_SESSION;
+    if (!net || net.kind !== "webrtc" || net.role !== "host" || net.dc?.readyState !== "open") return;
+    try {
+      net.sendJson({
+        t: "prepSync",
+        difficultyId: this.difficultyId,
+        carouselIndex: this.carouselIndex,
+        bossChoiceId: this.bossChoiceId
+      });
+    } catch {
+      /* ignore */
     }
   }
 
@@ -68,6 +85,28 @@ class PrepScene extends Phaser.Scene {
     let msg = null;
     try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return; }
     if (!msg || typeof msg !== "object") return;
+    if (msg.t === "prepSync") {
+      const diffs = window.DIFFICULTY_IDS || [];
+      if (msg.difficultyId && diffs.includes(msg.difficultyId)) {
+        const idx = diffs.indexOf(msg.difficultyId);
+        this.difficultyId = msg.difficultyId;
+        this.setDifficulty(msg.difficultyId, idx);
+      }
+      if (Number.isFinite(msg.carouselIndex) && this.bossEntries?.length) {
+        const max = this.bossEntries.length - 1;
+        const ci = Phaser.Math.Clamp(Math.floor(msg.carouselIndex), 0, max);
+        this.carouselIndex = ci;
+        this.bossChoiceId = this.bossEntries[ci]?.id ?? msg.bossChoiceId ?? "random";
+      } else if (msg.bossChoiceId && this.bossEntries?.some((e) => e.id === msg.bossChoiceId)) {
+        const ci = this.bossEntries.findIndex((e) => e.id === msg.bossChoiceId);
+        if (ci >= 0) {
+          this.carouselIndex = ci;
+          this.bossChoiceId = msg.bossChoiceId;
+        }
+      }
+      this.refreshPreview(true);
+      return;
+    }
     if (msg.t === "goMap" && msg.payload && typeof msg.payload === "object") {
       this.scene.start("MapSelectScene", msg.payload);
     }
@@ -275,6 +314,7 @@ class PrepScene extends Phaser.Scene {
       `attack cadence ${cadence}  \u00B7  boss damage ${Math.round(d.outgoingDamageMult * 100)}%  \u00B7  ` +
       `volley density ~${Math.round(d.spawnMult * 100)}%`
     );
+    this._broadcastPrepStateIfHost();
   }
 
   // ─── carousel ─────────────────────────────────────────────────────────────
@@ -360,7 +400,10 @@ class PrepScene extends Phaser.Scene {
           x: 480, alpha: 1,
           duration: 140,
           ease: "Quad.easeOut",
-          onComplete: () => { this._tweenBusy = false; }
+          onComplete: () => {
+            this._tweenBusy = false;
+            this._broadcastPrepStateIfHost();
+          }
         });
       }
     });
