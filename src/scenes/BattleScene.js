@@ -556,6 +556,46 @@ class BattleScene extends Phaser.Scene {
       return;
     }
     if (!msg || typeof msg !== "object") return;
+    // Global net control messages (joiner follows host scene changes).
+    if (msg.t === "disconnect" && net.role === "join") {
+      try {
+        if (window.P2P && typeof window.P2P.reset === "function") window.P2P.reset();
+      } catch {
+        /* ignore */
+      }
+      this.time.delayedCall(0, () => {
+        try {
+          this.scene.start("MainMenuScene");
+        } catch {
+          /* ignore */
+        }
+      });
+      return;
+    }
+    if (msg.t === "sceneSync" && net.role === "join") {
+      const sk = msg.sceneKey;
+      const payload = msg.payload;
+      if (typeof sk === "string" && sk.length) {
+        this.time.delayedCall(0, () => {
+          try {
+            this.scene.start(sk, payload && typeof payload === "object" ? payload : undefined);
+          } catch {
+            /* ignore */
+          }
+        });
+        return;
+      }
+    }
+    if (msg.t === "matchEnd" && net.role === "join" && msg.payload && typeof msg.payload === "object") {
+      this.time.delayedCall(0, () => {
+        try {
+          this.scene.start("GameOverScene", msg.payload);
+        } catch {
+          /* ignore */
+        }
+      });
+      return;
+    }
     if (msg.t === "in") {
       const seq = Number.isFinite(msg.seq) ? msg.seq : 0;
       if (seq <= (this._netRemoteSeq || 0)) return;
@@ -724,14 +764,23 @@ class BattleScene extends Phaser.Scene {
     if (!this.players.some((player) => player.isAlive)) {
       this.gameState = "lost";
       this.time.delayedCall(400, () => {
-        this.scene.start("GameOverScene", {
+        const payload = {
           result: "defeat",
           selectedPlayers: this.selectedPlayers,
           bossName: this.boss.definition.name,
           difficulty: this.difficultyId,
           bossId: this.bossChoiceId,
           arenaId: this.arenaId
-        });
+        };
+        if (this._netAuthHost && this.net?.dc?.readyState === "open") {
+          try {
+            this.net.sendJson({ t: "matchEnd", payload });
+            if (typeof this.net.sendSceneSync === "function") this.net.sendSceneSync("GameOverScene", payload);
+          } catch {
+            /* ignore */
+          }
+        }
+        this.scene.start("GameOverScene", payload);
       });
       return;
     }
@@ -4747,14 +4796,23 @@ class BattleScene extends Phaser.Scene {
     if (this.gameState !== "battle") return;
     this.gameState = "won";
     this.time.delayedCall(520, () => {
-      this.scene.start("GameOverScene", {
+      const payload = {
         result: "victory",
         selectedPlayers: this.selectedPlayers,
         bossName: this.boss.definition.name,
         difficulty: this.difficultyId,
         bossId: this.bossChoiceId,
         arenaId: this.arenaId
-      });
+      };
+      if (this._netAuthHost && this.net?.dc?.readyState === "open") {
+        try {
+          this.net.sendJson({ t: "matchEnd", payload });
+          if (typeof this.net.sendSceneSync === "function") this.net.sendSceneSync("GameOverScene", payload);
+        } catch {
+          /* ignore */
+        }
+      }
+      this.scene.start("GameOverScene", payload);
     });
   }
 
@@ -12445,11 +12503,34 @@ class BattleScene extends Phaser.Scene {
       fontStyle: "bold",
       fontFamily: "Consolas, Monaco, 'Courier New', monospace"
     }).setOrigin(0.5).setScrollFactor(0).setDepth(z + 3);
+    // Joiner should see "Disconnect" instead of "Exit".
+    try {
+      const net = window.NET_SESSION;
+      const isJoiner = !!(net && net.kind === "webrtc" && net.role === "join" && net.dc?.readyState === "open");
+      if (isJoiner) {
+        exitTx.setText("Disconnect (leave session)");
+        exitBg.setFillStyle(0x203a30, 0.95);
+        exitBg.setStrokeStyle(2, 0x66f09e, 0.9);
+      }
+    } catch {
+      /* ignore */
+    }
     exitBg.on("pointerover", () => exitBg.setFillStyle(0x4a2828, 0.98));
     exitBg.on("pointerout", () => exitBg.setFillStyle(0x3a2020, 0.95));
     exitBg.on("pointerdown", () => {
       this.physics.resume();
       this.time.paused = false;
+      const net = window.NET_SESSION;
+      const isJoiner = !!(net && net.kind === "webrtc" && net.role === "join" && net.dc?.readyState === "open");
+      if (isJoiner) {
+        try {
+          if (window.P2P && typeof window.P2P.reset === "function") window.P2P.reset();
+        } catch {
+          /* ignore */
+        }
+        this.scene.start("MainMenuScene");
+        return;
+      }
       this.scene.start("MainMenuScene");
     });
     all.push(exitBg, exitTx);

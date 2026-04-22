@@ -505,13 +505,23 @@ class MapSelectScene extends Phaser.Scene {
     if (!arena) return;
     const net = window.NET_SESSION;
     if (net && net.kind === "webrtc" && net.role === "join") return;
+    // Host must resolve random boss ONCE so joiners never roll a different boss.
+    let resolvedBossId = this.bossChoiceId;
+    if (resolvedBossId === "random") {
+      try {
+        const rb = window.getRandomBoss && window.getRandomBoss();
+        if (rb && rb.id) resolvedBossId = rb.id;
+      } catch {
+        /* ignore */
+      }
+    }
     if (net && net.kind === "webrtc" && net.role === "host" && net.dc?.readyState === "open") {
       net.sendJson({
         t: "goBattle",
         payload: {
           selectedPlayers: this.selectedPlayers,
           difficulty: this.difficultyId,
-          bossId: this.bossChoiceId,
+          bossId: resolvedBossId,
           arenaId: arena.id
         }
       });
@@ -519,7 +529,7 @@ class MapSelectScene extends Phaser.Scene {
         net.sendSceneSync("BattleScene", {
           selectedPlayers: this.selectedPlayers,
           difficulty: this.difficultyId,
-          bossId: this.bossChoiceId,
+          bossId: resolvedBossId,
           arenaId: arena.id
         });
       }
@@ -527,7 +537,7 @@ class MapSelectScene extends Phaser.Scene {
     this.scene.start("BattleScene", {
       selectedPlayers: this.selectedPlayers,
       difficulty: this.difficultyId,
-      bossId: this.bossChoiceId,
+      bossId: resolvedBossId,
       arenaId: arena.id
     });
   }

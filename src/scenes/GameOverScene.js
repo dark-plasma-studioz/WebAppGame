@@ -47,6 +47,24 @@ class GameOverScene extends Phaser.Scene {
       retry: Phaser.Input.Keyboard.KeyCodes.R,
       back: Phaser.Input.Keyboard.KeyCodes.B
     });
+    // P2P wiring: host decides replay/leave; joiner can request replay or leave (disconnect) locally.
+    this.net = window.NET_SESSION && window.NET_SESSION.kind === "webrtc" && window.NET_SESSION.dc?.readyState === "open"
+      ? window.NET_SESSION
+      : null;
+    this.netRole = this.net?.role || null;
+    if (this.netRole === "join") {
+      this.add.text(480, 420, "P2P: waiting for host decision (R=request replay, B=leave)", {
+        fontSize: "14px",
+        color: "#a8e8c8"
+      }).setOrigin(0.5);
+      this.net.onMessage = (raw) => this._onNetMessage(raw);
+    } else if (this.netRole === "host") {
+      this.add.text(480, 420, "P2P HOST: R=replay (back to lobby) · B=end session", {
+        fontSize: "14px",
+        color: "#a8e8c8"
+      }).setOrigin(0.5);
+      this.net.onMessage = (raw) => this._onNetMessage(raw);
+    }
     this._navPending = false;
     this._navTimer = null;
     this.events.once("shutdown", () => {
@@ -62,6 +80,36 @@ class GameOverScene extends Phaser.Scene {
     });
     if (this.input?.keyboard) {
       this.input.keyboard.enabled = true;
+    }
+  }
+
+  _onNetMessage(raw) {
+    const net = window.NET_SESSION;
+    if (!net || net.kind !== "webrtc" || net.dc?.readyState !== "open") return;
+    let msg = null;
+    try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return; }
+    if (!msg || typeof msg !== "object") return;
+    if (msg.t === "disconnect" && net.role === "join") {
+      try {
+        if (window.P2P && typeof window.P2P.reset === "function") window.P2P.reset();
+      } catch {
+        /* ignore */
+      }
+      this.queueGoMainMenu();
+      return;
+    }
+    if (msg.t === "sceneSync" && net.role === "join") {
+      const sk = msg.sceneKey;
+      if (sk === "CharacterSelectScene") {
+        this.time.delayedCall(0, () => this.scene.start("CharacterSelectScene"));
+      } else if (sk === "MainMenuScene") {
+        this.queueGoMainMenu();
+      }
+      return;
+    }
+    if (msg.t === "replayReq" && net.role === "host") {
+      // Host can ignore; we just surface the request by enabling R flow (no UI change needed).
+      return;
     }
   }
 
@@ -117,9 +165,40 @@ class GameOverScene extends Phaser.Scene {
 
   update() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.retry)) {
+      const net = window.NET_SESSION;
+      const host = !!(net && net.kind === "webrtc" && net.role === "host" && net.dc?.readyState === "open");
+      const join = !!(net && net.kind === "webrtc" && net.role === "join" && net.dc?.readyState === "open");
+      if (host) {
+        try {
+          if (typeof net.sendSceneSync === "function") net.sendSceneSync("CharacterSelectScene");
+          else net.sendJson({ t: "sceneSync", sceneKey: "CharacterSelectScene", payload: null });
+        } catch {
+          /* ignore */
+        }
+        this.time.delayedCall(0, () => this.scene.start("CharacterSelectScene"));
+        return;
+      }
+      if (join) {
+        try { net.sendJson({ t: "replayReq" }); } catch { /* ignore */ }
+        return;
+      }
       this.queueGoBattle();
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.back)) {
+      const net = window.NET_SESSION;
+      const host = !!(net && net.kind === "webrtc" && net.role === "host" && net.dc?.readyState === "open");
+      const join = !!(net && net.kind === "webrtc" && net.role === "join" && net.dc?.readyState === "open");
+      if (host) {
+        try { net.sendJson({ t: "disconnect" }); } catch { /* ignore */ }
+        try { if (window.P2P && typeof window.P2P.reset === "function") window.P2P.reset(); } catch { /* ignore */ }
+        this.queueGoMainMenu();
+        return;
+      }
+      if (join) {
+        try { if (window.P2P && typeof window.P2P.reset === "function") window.P2P.reset(); } catch { /* ignore */ }
+        this.queueGoMainMenu();
+        return;
+      }
       this.queueGoMainMenu();
     }
   }
